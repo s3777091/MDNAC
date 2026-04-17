@@ -1,0 +1,12 @@
+storage_mode: local
+data_root: libs/data
+default_batch_size: 25
+
+minio:
+  endpoint_url: http://localhost:9000
+  # Access key and secret key should live in the repo-root .env file.
+  access_key: minioadmin
+  secret_key: minioadmin
+  bucket_name: microbial-dna-compiler
+  region_name:
+  secure: true
