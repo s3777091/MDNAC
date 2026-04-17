@@ -8,15 +8,6 @@ from typing import Iterable
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
-from libs.data.utilities.refseq_history import (
-    bootstrap_refseq_history,
-    load_refseq_history,
-    register_archive_file,
-    resolve_refseq_history_path,
-    resolve_refseq_history_root,
-    save_refseq_history,
-)
-
 
 _DEFAULT_USER_AGENT = "MicrobialDNACompiler/0.2"
 _DOWNLOAD_CHUNK_SIZE = 1024 * 1024
@@ -172,15 +163,12 @@ def download_entry(
     output_dir: Path | str,
     force: bool = False,
     user_agent: str = _DEFAULT_USER_AGENT,
-    history: dict[str, object] | None = None,
-    history_root: Path | str | None = None,
 ) -> DownloadResult:
     destination_dir = Path(output_dir)
     destination_dir.mkdir(parents=True, exist_ok=True)
     destination_path = destination_dir / entry.name
     temp_path = destination_path.with_name(f"{destination_path.name}.part")
     destination_existed = destination_path.exists()
-    resolved_history_root = Path(history_root) if history_root is not None else resolve_refseq_history_root(destination_dir)
 
     request = Request(entry.url, headers={"User-Agent": user_agent}, method="GET")
     with urlopen(request, timeout=60) as response:
@@ -189,48 +177,10 @@ def download_entry(
             existing_size = destination_path.stat().st_size
             if expected_size is None or existing_size == expected_size:
                 temp_path.unlink(missing_ok=True)
-                if history is not None:
-                    register_archive_file(
-                        history,
-                        resolved_history_root,
-                        destination_path,
-                        url=entry.url,
-                        expected_size=expected_size,
-                        download_status="skipped",
-                    )
                 return DownloadResult(
                     entry=entry,
                     path=destination_path,
                     status="skipped",
-                    expected_size=expected_size,
-                )
-
-        if not destination_existed and not force and history is not None:
-            archive_entry = register_archive_file(
-                history,
-                resolved_history_root,
-                destination_path,
-                url=entry.url,
-                expected_size=expected_size,
-            )
-            recorded_size = archive_entry.get("expected_size")
-            if recorded_size is None:
-                recorded_size = archive_entry.get("compiled_local_size", archive_entry.get("local_size"))
-            try:
-                normalized_recorded_size = int(recorded_size) if recorded_size is not None else None
-            except (TypeError, ValueError):
-                normalized_recorded_size = None
-            if (
-                archive_entry.get("build_status") == "compiled"
-                and expected_size is not None
-                and normalized_recorded_size == expected_size
-            ):
-                archive_entry["present_on_disk"] = False
-                archive_entry["last_download_status"] = "recorded"
-                return DownloadResult(
-                    entry=entry,
-                    path=destination_path,
-                    status="recorded",
                     expected_size=expected_size,
                 )
 
@@ -256,15 +206,6 @@ def download_entry(
 
     temp_path.replace(destination_path)
     status = "replaced" if destination_existed else "downloaded"
-    if history is not None:
-        register_archive_file(
-            history,
-            resolved_history_root,
-            destination_path,
-            url=entry.url,
-            expected_size=expected_size,
-            download_status=status,
-        )
     return DownloadResult(
         entry=entry,
         path=destination_path,
@@ -280,18 +221,13 @@ def download_directory(
     exclude_patterns: Iterable[str] = (),
     force: bool = False,
     user_agent: str = _DEFAULT_USER_AGENT,
-) -> tuple[Path, list[DownloadResult], Path]:
+) -> tuple[Path, list[DownloadResult]]:
     resolved_url = ensure_directory_url(directory_url)
     html = fetch_index_html(resolved_url, user_agent=user_agent)
     entries = extract_directory_entries(html, resolved_url)
     filtered_entries = filter_entries(entries, include_patterns=include_patterns, exclude_patterns=exclude_patterns)
 
     target_dir = Path(output_dir) if output_dir is not None else default_output_dir(resolved_url)
-    history_root = resolve_refseq_history_root(target_dir)
-    history_path = resolve_refseq_history_path(target_dir)
-    history = load_refseq_history(history_path, input_root=history_root)
-    if history_root.exists():
-        bootstrap_refseq_history(history_root, history)
     results: list[DownloadResult] = []
     for entry in filtered_entries:
         results.append(
@@ -300,10 +236,7 @@ def download_directory(
                 target_dir,
                 force=force,
                 user_agent=user_agent,
-                history=history,
-                history_root=history_root,
             )
         )
 
-    save_refseq_history(history_path, history)
-    return target_dir, results, history_path
+    return target_dir, results

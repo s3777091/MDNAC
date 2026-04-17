@@ -12,7 +12,6 @@ from libs.data.utilities.http_index_download import (
     fetch_index_html,
     filter_entries,
 )
-from libs.data.utilities.refseq_history import resolve_refseq_history_path
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -72,11 +71,10 @@ def main() -> int:
         for entry in filtered_entries:
             print(entry.name)
         print(f"[target] {target_dir}")
-        print(f"[history.json] {resolve_refseq_history_path(target_dir)}")
         return 0
 
     try:
-        output_dir, download_results, history_path = download_directory(
+        output_dir, download_results = download_directory(
             resolved_url,
             output_dir=target_dir,
             include_patterns=args.include,
@@ -87,22 +85,20 @@ def main() -> int:
         print(f"[error] failed to reach {resolved_url}: {exc.reason}")
         return 2
 
-    status_counts = {"downloaded": 0, "replaced": 0, "skipped": 0, "recorded": 0}
+    status_counts = {"downloaded": 0, "replaced": 0, "skipped": 0}
     for result in download_results:
         status_counts[result.status] = status_counts.get(result.status, 0) + 1
 
     print(f"[source] {resolved_url}")
     print(f"[target] {output_dir}")
-    print(f"[history.json] {history_path}")
     print(f"[matched] {len(download_results)} files")
     print(f"[downloaded] {status_counts['downloaded']}")
     print(f"[replaced] {status_counts['replaced']}")
     print(f"[skipped] {status_counts['skipped']}")
-    print(f"[recorded] {status_counts['recorded']}")
     for result in download_results:
         print(f"{result.status}\t{result.entry.name}")
     if download_results and status_counts["downloaded"] == 0 and status_counts["replaced"] == 0:
-        print("[warning] all matching files are already present in history.json; nothing new was downloaded.")
+        print("[warning] all matching files are already present on disk; nothing new was downloaded.")
     return 0
 
 

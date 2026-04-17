@@ -11,7 +11,7 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Compile local RefSeq .gpff.gz/.faa.gz archives into sequence-only protein pretrain "
             "artifacts (train.txt + tokenizer_map.json) and instruction.jsonl for metadata-to-protein tuning. "
-            "Incremental state is stored in summary.json."
+            "Existing train.txt and instruction.jsonl files are appended instead of being diffed or rewritten."
         ),
     )
     parser.add_argument(
@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("data/compiled/refseq_bacteria_protein"),
         help=(
-            "Directory where train.txt, tokenizer_map.json, instruction.jsonl, and summary.json will be written. "
+            "Directory where train.txt, tokenizer_map.json, and instruction.jsonl will be written. "
             "If the output folder name matches a direct child folder under input_root, only that child folder "
             "will be compiled."
         ),
@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--instruction-min-proteins",
         type=int,
         default=10,
-        help="Minimum proteins required for a derived condition to count toward instruction coverage stats in summary.json.",
+        help="Minimum proteins required for a derived condition to count toward instruction coverage stats.",
     )
     parser.add_argument(
         "--max-records",
@@ -104,11 +104,9 @@ def main() -> int:
     )
     print(f"[input] {summary.input_root}")
     print(f"[output] {summary.output_dir}")
-    print(f"[history.json] {summary.history_path}")
     print(f"[train.txt] {summary.train_text_path}")
     print(f"[tokenizer_map.json] {summary.tokenizer_map_path}")
     print(f"[instruction.jsonl] {summary.instruction_path}")
-    print(f"[summary.json] {summary.summary_path}")
     print(f"[source_records] {summary.source_record_count}")
     print(f"[records] {summary.record_count}")
     print(f"[instruction_records] {summary.instruction_record_count}")
@@ -120,15 +118,6 @@ def main() -> int:
     print(f"[gpff_only_records] {summary.gpff_only_record_count}")
     print(f"[faa_only_records] {summary.faa_only_record_count}")
     print(f"[truncated_inputs] {summary.truncated_input_count}")
-    print(f"[new_source_records] {summary.new_source_record_count}")
-    print(f"[updated_source_records] {summary.updated_source_record_count}")
-    print(f"[unchanged_source_records] {summary.unchanged_source_record_count}")
-    print(f"[removed_source_records] {summary.removed_source_record_count}")
-    print(f"[processed_archives] {summary.processed_archive_count}")
-    print(f"[deleted_archives] {summary.deleted_archive_count}")
-    print(f"[reused_existing_artifacts] {summary.reused_existing_artifacts}")
-    if summary.reused_existing_artifacts:
-        print("[warning] summary.json indicates there are no new archives to compile; existing artifacts were reused.")
     return 0
 
 

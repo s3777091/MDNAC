@@ -10,7 +10,6 @@ from unittest.mock import patch
 from libs.core.pretrain import refseq_local
 from libs.core.pretrain.refseq_local import build_local_refseq_profile_text_artifacts
 from libs.data.training import SequenceTokenizer
-from libs.data.utilities.refseq_history import load_refseq_history
 
 
 AMINO_ALPHABET = "ACDEFGHIKLMNPQRSTVWY"
@@ -94,7 +93,6 @@ class RefseqProfileTextTests(unittest.TestCase):
         self.assertEqual(11, summary.instruction_record_count)
         self.assertEqual(1, summary.instruction_condition_count)
         self.assertEqual(0, summary.skipped_instruction_condition_count)
-        self.assertEqual(11, summary.new_source_record_count)
 
         train_lines = Path(summary.train_text_path).read_text(encoding="utf-8").splitlines()
         self.assertEqual(11, len(train_lines))
@@ -124,101 +122,84 @@ class RefseqProfileTextTests(unittest.TestCase):
         self.assertEqual(["nitrogen fixation"], instruction_payload["derived_labels"])
         self.assertIn("nitrogen fixation", instruction_payload["derived_keywords"])
         self.assertEqual("test-group/bundle.1.protein", instruction_payload["metadata"]["dataset_bundle"])
-        self.assertTrue(Path(summary.history_path).exists())
-        self.assertEqual(0, summary.deleted_archive_count)
-        self.assertTrue((self.group_dir / "bundle.1.protein.gpff.gz").exists())
-        self.assertTrue((self.group_dir / "bundle.1.protein.faa.gz").exists())
-        self.assertFalse((self.output_dir / "source_index.json").exists())
-
-        summary_payload = json.loads(Path(summary.summary_path).read_text(encoding="utf-8"))
-        self.assertNotIn("source_index_path", summary_payload)
-        self.assertEqual(str(self.input_root), summary_payload["requested_input_root"])
-        self.assertEqual(1, len(summary_payload["processed_bundles"]))
-        self.assertEqual("test-group/bundle.1.protein", summary_payload["processed_bundles"][0]["bundle_key"])
-        self.assertEqual(2, len(summary_payload["input_files"]))
-
-        history = load_refseq_history(summary.history_path, input_root=self.input_root)
-        gpff_entry = history["archives"]["test-group/bundle.1.protein.gpff.gz"]
-        faa_entry = history["archives"]["test-group/bundle.1.protein.faa.gz"]
-        self.assertEqual("compiled", gpff_entry["build_status"])
-        self.assertEqual("compiled", faa_entry["build_status"])
-        self.assertTrue(gpff_entry["present_on_disk"])
-        self.assertTrue(faa_entry["present_on_disk"])
-
-    def test_rebuild_reuses_existing_artifacts_when_archives_are_unchanged(self) -> None:
-        self._write_refseq_bundle(record_count=3, updated_accessions={})
-
-        first_summary = build_local_refseq_profile_text_artifacts(
-            self.input_root,
-            self.output_dir,
-            vocab_size=64,
-            instruction_min_proteins=1,
-        )
-        (self.output_dir / "source_index.json").write_text("{\"legacy\":true}\n", encoding="utf-8")
-        second_summary = build_local_refseq_profile_text_artifacts(
-            self.input_root,
-            self.output_dir,
-            vocab_size=64,
-            instruction_min_proteins=1,
-        )
 
         self.assertTrue((self.group_dir / "bundle.1.protein.gpff.gz").exists())
         self.assertTrue((self.group_dir / "bundle.1.protein.faa.gz").exists())
-        self.assertFalse(first_summary.reused_existing_artifacts)
-        self.assertTrue(second_summary.reused_existing_artifacts)
-        self.assertEqual(0, second_summary.processed_archive_count)
-        self.assertEqual(0, second_summary.deleted_archive_count)
-        self.assertEqual(3, second_summary.record_count)
-        self.assertEqual(0, second_summary.new_source_record_count)
-        self.assertEqual(0, second_summary.updated_source_record_count)
-        self.assertEqual(3, second_summary.unchanged_source_record_count)
-        self.assertEqual(0, second_summary.removed_source_record_count)
+        self.assertFalse((self.output_dir / "summary.json").exists())
         self.assertFalse((self.output_dir / "source_index.json").exists())
+        self.assertFalse((self.input_root / "history.json").exists())
 
-    def test_rebuild_detects_new_and_updated_records_without_duplicate_sequences(self) -> None:
-        self._write_refseq_bundle(record_count=10, updated_accessions={})
-        first_summary = build_local_refseq_profile_text_artifacts(
-            self.input_root,
-            self.output_dir,
-            vocab_size=64,
-            instruction_min_proteins=10,
-        )
+    def test_partial_input_appends_current_batch_without_dropping_existing_data(self) -> None:
+        package_one_dir = self.input_root / "package_1"
+        package_two_dir = self.input_root / "package_2"
+        package_one_dir.mkdir(parents=True, exist_ok=True)
+        package_two_dir.mkdir(parents=True, exist_ok=True)
 
-        original_sequence = build_sequence(5)
-        updated_sequence = build_sequence(18)
+        original_package_one_sequence = build_sequence(2)
+        updated_package_one_sequence = build_sequence(18)
+        package_two_sequence = "MWWWWWWWWWWWWW"
+        package_two_second_sequence = "MYYYYYYYYYYYYY"
         self._write_refseq_bundle(
-            record_count=11,
+            record_count=2,
+            updated_accessions={},
+            bundle_name="bundle.1",
+            group_dir=package_one_dir,
+        )
+        self._write_refseq_bundle(
+            record_count=2,
             updated_accessions={
-                5: {
-                    "sequence": updated_sequence,
-                    "description": "updated nitrogen fixation protein 5",
-                    "product": "updated nitrogenase helper 5",
-                    "note": "updated nitrogen fixation regulator",
+                100: {"sequence": package_two_sequence},
+                101: {"sequence": package_two_second_sequence},
+            },
+            bundle_name="bundle.1",
+            start_index=100,
+            group_dir=package_two_dir,
+        )
+
+        full_summary = build_local_refseq_profile_text_artifacts(
+            self.input_root,
+            self.output_dir,
+            vocab_size=64,
+            instruction_min_proteins=1,
+        )
+        self.assertEqual(4, full_summary.record_count)
+
+        self._write_refseq_bundle(
+            record_count=3,
+            updated_accessions={
+                2: {
+                    "sequence": updated_package_one_sequence,
+                    "description": "updated nitrogen fixation protein 2",
+                    "product": "updated nitrogenase helper 2",
                 }
             },
+            bundle_name="bundle.1",
+            group_dir=package_one_dir,
         )
-        second_summary = build_local_refseq_profile_text_artifacts(
-            self.input_root,
+
+        partial_summary = build_local_refseq_profile_text_artifacts(
+            package_one_dir,
             self.output_dir,
             vocab_size=64,
-            instruction_min_proteins=10,
+            instruction_min_proteins=1,
         )
 
-        self.assertEqual(10, first_summary.record_count)
-        self.assertEqual(11, second_summary.source_record_count)
-        self.assertEqual(11, second_summary.record_count)
-        self.assertEqual(1, second_summary.new_source_record_count)
-        self.assertEqual(1, second_summary.updated_source_record_count)
-        self.assertEqual(9, second_summary.unchanged_source_record_count)
-        self.assertEqual(0, second_summary.removed_source_record_count)
-        self.assertEqual(0, second_summary.duplicate_sequence_count)
+        self.assertEqual(3, partial_summary.source_record_count)
+        self.assertEqual(3, partial_summary.record_count)
 
-        train_lines = Path(second_summary.train_text_path).read_text(encoding="utf-8").splitlines()
-        self.assertEqual(11, len(train_lines))
-        self.assertEqual(11, len(set(train_lines)))
-        self.assertIn(f"<|protein|>{updated_sequence}<|endoftext|>", train_lines)
-        self.assertNotIn(f"<|protein|>{original_sequence}<|endoftext|>", train_lines)
-        self.assertFalse((self.output_dir / "source_index.json").exists())
+        train_lines = Path(partial_summary.train_text_path).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(7, len(train_lines))
+        self.assertIn(f"<|protein|>{package_two_sequence}<|endoftext|>", train_lines)
+        self.assertIn(f"<|protein|>{original_package_one_sequence}<|endoftext|>", train_lines)
+        self.assertIn(f"<|protein|>{updated_package_one_sequence}<|endoftext|>", train_lines)
+        self.assertIn(f"<|protein|>{build_sequence(3)}<|endoftext|>", train_lines)
+
+        instruction_lines = Path(partial_summary.instruction_path).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(7, len(instruction_lines))
+        instruction_accessions = [json.loads(line)["accession"] for line in instruction_lines]
+        self.assertIn("NP_000003.1", instruction_accessions)
+        self.assertIn("NP_000100.1", instruction_accessions)
+        self.assertEqual(2, instruction_accessions.count("NP_000002.1"))
 
     def test_skip_train_requires_existing_train_txt_for_tokenizer_map(self) -> None:
         self._write_refseq_bundle(record_count=3, updated_accessions={})
@@ -231,9 +212,6 @@ class RefseqProfileTextTests(unittest.TestCase):
                 instruction_min_proteins=1,
                 skip_artifacts={"train"},
             )
-
-        self.assertTrue((self.group_dir / "bundle.1.protein.gpff.gz").exists())
-        self.assertTrue((self.group_dir / "bundle.1.protein.faa.gz").exists())
 
     def test_skip_train_and_instruction_rebuilds_only_tokenizer_map(self) -> None:
         self._write_refseq_bundle(record_count=3, updated_accessions={})
@@ -255,8 +233,6 @@ class RefseqProfileTextTests(unittest.TestCase):
             skip_artifacts={"train", "instruction.jsonl"},
         )
 
-        self.assertFalse(second_summary.reused_existing_artifacts)
-        self.assertEqual(0, second_summary.processed_archive_count)
         self.assertEqual(original_train_text, Path(second_summary.train_text_path).read_text(encoding="utf-8"))
         self.assertEqual(
             original_instruction_text,
@@ -265,80 +241,53 @@ class RefseqProfileTextTests(unittest.TestCase):
         tokenizer = SequenceTokenizer.load_map(second_summary.tokenizer_map_path)
         self.assertEqual(original_train_text, tokenizer.decode(tokenizer.encode(original_train_text)))
 
-    def test_skip_instruction_keeps_incremental_state_for_later_rebuild(self) -> None:
-        self._write_refseq_bundle(record_count=10, updated_accessions={})
-        initial_summary = build_local_refseq_profile_text_artifacts(
-            self.input_root,
-            self.output_dir,
-            vocab_size=64,
-            instruction_min_proteins=10,
-        )
-        original_instruction_text = Path(initial_summary.instruction_path).read_text(encoding="utf-8")
+    def test_skip_instruction_keeps_existing_instruction_file(self) -> None:
+        package_one_dir = self.input_root / "package_1"
+        package_two_dir = self.input_root / "package_2"
+        package_one_dir.mkdir(parents=True, exist_ok=True)
+        package_two_dir.mkdir(parents=True, exist_ok=True)
 
-        self._write_refseq_bundle(record_count=11, updated_accessions={})
-        skipped_instruction_summary = build_local_refseq_profile_text_artifacts(
-            self.input_root,
+        self._write_refseq_bundle(
+            record_count=2,
+            updated_accessions={},
+            bundle_name="bundle.1",
+            group_dir=package_one_dir,
+        )
+        build_local_refseq_profile_text_artifacts(
+            package_one_dir,
             self.output_dir,
             vocab_size=64,
-            instruction_min_proteins=10,
+            instruction_min_proteins=1,
+        )
+        original_instruction_text = (self.output_dir / "instruction.jsonl").read_text(encoding="utf-8")
+
+        self._write_refseq_bundle(
+            record_count=2,
+            updated_accessions={
+                100: {"sequence": "MWWWWWWWWWWWWW"},
+                101: {"sequence": "MYYYYYYYYYYYYY"},
+            },
+            bundle_name="bundle.1",
+            start_index=100,
+            group_dir=package_two_dir,
+        )
+        skipped_instruction_summary = build_local_refseq_profile_text_artifacts(
+            package_two_dir,
+            self.output_dir,
+            vocab_size=64,
+            instruction_min_proteins=1,
             skip_artifacts={"instruction"},
         )
 
-        self.assertEqual(11, skipped_instruction_summary.record_count)
+        self.assertEqual(2, skipped_instruction_summary.record_count)
         self.assertEqual(
-            11,
+            4,
             len(Path(skipped_instruction_summary.train_text_path).read_text(encoding="utf-8").splitlines()),
         )
         self.assertEqual(
             original_instruction_text,
             Path(skipped_instruction_summary.instruction_path).read_text(encoding="utf-8"),
         )
-
-        rebuilt_summary = build_local_refseq_profile_text_artifacts(
-            self.input_root,
-            self.output_dir,
-            vocab_size=64,
-            instruction_min_proteins=10,
-        )
-
-        self.assertFalse(rebuilt_summary.reused_existing_artifacts)
-        self.assertEqual(2, rebuilt_summary.processed_archive_count)
-        self.assertEqual(
-            11,
-            len(Path(rebuilt_summary.instruction_path).read_text(encoding="utf-8").splitlines()),
-        )
-        rebuilt_summary_payload = json.loads(Path(rebuilt_summary.summary_path).read_text(encoding="utf-8"))
-        self.assertEqual(
-            11,
-            sum(item["record_count"] for item in rebuilt_summary_payload["input_files"] if item["kind"] == "gpff"),
-        )
-
-    def test_max_records_only_marks_fully_processed_bundle(self) -> None:
-        self._write_refseq_bundle(record_count=3, updated_accessions={}, bundle_name="bundle.1")
-        self._write_refseq_bundle(record_count=3, updated_accessions={}, bundle_name="bundle.2", start_index=100)
-
-        summary = build_local_refseq_profile_text_artifacts(
-            self.input_root,
-            self.output_dir,
-            vocab_size=64,
-            instruction_min_proteins=1,
-            max_records=3,
-        )
-
-        self.assertEqual(2, summary.processed_archive_count)
-        self.assertEqual(0, summary.deleted_archive_count)
-        self.assertTrue((self.group_dir / "bundle.1.protein.gpff.gz").exists())
-        self.assertTrue((self.group_dir / "bundle.1.protein.faa.gz").exists())
-        self.assertTrue((self.group_dir / "bundle.2.protein.gpff.gz").exists())
-        self.assertTrue((self.group_dir / "bundle.2.protein.faa.gz").exists())
-
-        history = load_refseq_history(summary.history_path, input_root=self.input_root)
-        first_gpff = history["archives"]["test-group/bundle.1.protein.gpff.gz"]
-        second_gpff = history["archives"]["test-group/bundle.2.protein.gpff.gz"]
-        self.assertEqual("compiled", first_gpff["build_status"])
-        self.assertEqual("pending", second_gpff["build_status"])
-        self.assertTrue(first_gpff["present_on_disk"])
-        self.assertTrue(second_gpff["present_on_disk"])
 
     def test_output_subfolder_scopes_build_to_matching_input_folder(self) -> None:
         bacteria_dir = self.input_root / "bacteria"
@@ -382,79 +331,6 @@ class RefseqProfileTextTests(unittest.TestCase):
         self.assertEqual(3, len(train_lines))
         self.assertIn("<|protein|>MWWWWWWWWWWWWW<|endoftext|>", train_lines)
         self.assertNotIn(f"<|protein|>{bacteria_sequence}<|endoftext|>", train_lines)
-
-        summary_payload = json.loads(Path(summary.summary_path).read_text(encoding="utf-8"))
-        self.assertEqual(str(self.input_root), summary_payload["requested_input_root"])
-        self.assertTrue(all("fungi.1.protein" in item["bundle_key"] for item in summary_payload["input_files"]))
-
-    def test_partial_input_appends_into_existing_compiled_root_without_dropping_other_packages(self) -> None:
-        package_one_dir = self.input_root / "package_1"
-        package_two_dir = self.input_root / "package_2"
-        package_one_dir.mkdir(parents=True, exist_ok=True)
-        package_two_dir.mkdir(parents=True, exist_ok=True)
-
-        package_two_sequence = "MWWWWWWWWWWWWW"
-        package_two_second_sequence = "MYYYYYYYYYYYYY"
-        self._write_refseq_bundle(
-            record_count=2,
-            updated_accessions={},
-            bundle_name="bundle.1",
-            group_dir=package_one_dir,
-        )
-        self._write_refseq_bundle(
-            record_count=2,
-            updated_accessions={
-                100: {"sequence": package_two_sequence},
-                101: {"sequence": package_two_second_sequence},
-            },
-            bundle_name="bundle.1",
-            start_index=100,
-            group_dir=package_two_dir,
-        )
-
-        full_summary = build_local_refseq_profile_text_artifacts(
-            self.input_root,
-            self.output_dir,
-            vocab_size=64,
-            instruction_min_proteins=1,
-        )
-        self.assertEqual(4, full_summary.record_count)
-
-        self._write_refseq_bundle(
-            record_count=3,
-            updated_accessions={},
-            bundle_name="bundle.1",
-            group_dir=package_one_dir,
-        )
-
-        partial_summary = build_local_refseq_profile_text_artifacts(
-            package_one_dir,
-            self.output_dir,
-            vocab_size=64,
-            instruction_min_proteins=1,
-        )
-
-        self.assertEqual(5, partial_summary.source_record_count)
-        self.assertEqual(5, partial_summary.record_count)
-        self.assertEqual(1, partial_summary.new_source_record_count)
-        self.assertEqual(0, partial_summary.updated_source_record_count)
-        self.assertEqual(4, partial_summary.unchanged_source_record_count)
-
-        train_lines = Path(partial_summary.train_text_path).read_text(encoding="utf-8").splitlines()
-        self.assertEqual(5, len(train_lines))
-        self.assertIn(f"<|protein|>{package_two_sequence}<|endoftext|>", train_lines)
-        self.assertIn(f"<|protein|>{build_sequence(3)}<|endoftext|>", train_lines)
-
-        instruction_lines = Path(partial_summary.instruction_path).read_text(encoding="utf-8").splitlines()
-        self.assertEqual(5, len(instruction_lines))
-        instruction_accessions = {json.loads(line)["accession"] for line in instruction_lines}
-        self.assertIn("NP_000003.1", instruction_accessions)
-        self.assertIn("NP_000100.1", instruction_accessions)
-
-        summary_payload = json.loads(Path(partial_summary.summary_path).read_text(encoding="utf-8"))
-        processed_bundle_keys = {item["bundle_key"] for item in summary_payload["processed_bundles"]}
-        self.assertIn("package_1/bundle.1.protein", processed_bundle_keys)
-        self.assertIn("package_2/bundle.1.protein", processed_bundle_keys)
 
     def test_parallel_workers_match_serial_outputs(self) -> None:
         self._write_refseq_bundle(record_count=11, updated_accessions={})

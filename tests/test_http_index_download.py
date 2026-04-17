@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import shutil
 import unittest
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from libs.data.utilities.http_index_download import (
@@ -13,7 +13,6 @@ from libs.data.utilities.http_index_download import (
     extract_directory_entries,
     filter_entries,
 )
-from libs.data.utilities.refseq_history import load_refseq_history, resolve_refseq_history_path, save_refseq_history
 
 
 class _FakeHeaders(dict):
@@ -52,6 +51,14 @@ class _FakeResponse:
 
 
 class HttpIndexDownloadTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path("tests/artifacts/http-index-download")
+        shutil.rmtree(self.root, ignore_errors=True)
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.root, ignore_errors=True)
+
     def test_extracts_only_direct_file_entries(self):
         html = """
         <html><body><pre>
@@ -106,116 +113,76 @@ class HttpIndexDownloadTests(unittest.TestCase):
 
     def test_skips_existing_file_when_size_matches_server(self):
         entry = DirectoryEntry(name="alpha.txt", url="https://example.com/alpha.txt")
-        with TemporaryDirectory() as temp_dir:
-            destination = Path(temp_dir, entry.name)
-            destination.write_bytes(b"abc")
+        temp_dir = self.root / "skip-existing"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        destination = temp_dir / entry.name
+        destination.write_bytes(b"abc")
 
-            with patch(
-                "libs.data.utilities.http_index_download.urlopen",
-                return_value=_FakeResponse(b"abc", content_length=3),
-            ):
-                result = download_entry(entry, temp_dir)
+        with patch(
+            "libs.data.utilities.http_index_download.urlopen",
+            return_value=_FakeResponse(b"abc", content_length=3),
+        ):
+            result = download_entry(entry, temp_dir)
 
-            self.assertEqual("skipped", result.status)
-            self.assertEqual(b"abc", destination.read_bytes())
-            self.assertFalse(Path(temp_dir, "alpha.txt.part").exists())
+        self.assertEqual("skipped", result.status)
+        self.assertEqual(b"abc", destination.read_bytes())
+        self.assertFalse((temp_dir / "alpha.txt.part").exists())
 
     def test_replaces_existing_file_when_size_differs(self):
         entry = DirectoryEntry(name="alpha.txt", url="https://example.com/alpha.txt")
-        with TemporaryDirectory() as temp_dir:
-            destination = Path(temp_dir, entry.name)
-            destination.write_bytes(b"a")
+        temp_dir = self.root / "replace-existing"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        destination = temp_dir / entry.name
+        destination.write_bytes(b"a")
 
-            with patch(
-                "libs.data.utilities.http_index_download.urlopen",
-                return_value=_FakeResponse(b"abc", content_length=3),
-            ):
-                result = download_entry(entry, temp_dir)
+        with patch(
+            "libs.data.utilities.http_index_download.urlopen",
+            return_value=_FakeResponse(b"abc", content_length=3),
+        ):
+            result = download_entry(entry, temp_dir)
 
-            self.assertEqual("replaced", result.status)
-            self.assertEqual(b"abc", destination.read_bytes())
-            self.assertFalse(Path(temp_dir, "alpha.txt.part").exists())
+        self.assertEqual("replaced", result.status)
+        self.assertEqual(b"abc", destination.read_bytes())
+        self.assertFalse((temp_dir / "alpha.txt.part").exists())
 
     def test_preserves_existing_file_when_redownload_fails(self):
         entry = DirectoryEntry(name="alpha.txt", url="https://example.com/alpha.txt")
-        with TemporaryDirectory() as temp_dir:
-            destination = Path(temp_dir, entry.name)
-            destination.write_bytes(b"stable")
+        temp_dir = self.root / "preserve-existing"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        destination = temp_dir / entry.name
+        destination.write_bytes(b"stable")
 
-            with patch(
-                "libs.data.utilities.http_index_download.urlopen",
-                return_value=_FakeResponse(b"abcdef", content_length=6, fail_after_reads=1),
-            ):
-                with self.assertRaises(OSError):
-                    download_entry(entry, temp_dir, force=True)
+        with patch(
+            "libs.data.utilities.http_index_download.urlopen",
+            return_value=_FakeResponse(b"abcdef", content_length=6, fail_after_reads=1),
+        ):
+            with self.assertRaises(OSError):
+                download_entry(entry, temp_dir, force=True)
 
-            self.assertEqual(b"stable", destination.read_bytes())
-            self.assertFalse(Path(temp_dir, "alpha.txt.part").exists())
+        self.assertEqual(b"stable", destination.read_bytes())
+        self.assertFalse((temp_dir / "alpha.txt.part").exists())
 
-    def test_download_directory_bootstraps_existing_file_into_history(self):
-        with TemporaryDirectory() as temp_dir:
-            destination = Path(temp_dir, "alpha.txt")
-            destination.write_bytes(b"abc")
+    def test_download_directory_skips_existing_file_without_history_tracking(self):
+        temp_dir = self.root / "directory-skip"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        destination = temp_dir / "alpha.txt"
+        destination.write_bytes(b"abc")
 
-            with patch(
-                "libs.data.utilities.http_index_download.fetch_index_html",
-                return_value='<a href="alpha.txt">alpha.txt</a>',
-            ), patch(
-                "libs.data.utilities.http_index_download.urlopen",
-                return_value=_FakeResponse(b"abc", content_length=3),
-            ):
-                output_dir, results, history_path = download_directory(
-                    "https://example.com/files/",
-                    output_dir=temp_dir,
-                )
+        with patch(
+            "libs.data.utilities.http_index_download.fetch_index_html",
+            return_value='<a href="alpha.txt">alpha.txt</a>',
+        ), patch(
+            "libs.data.utilities.http_index_download.urlopen",
+            return_value=_FakeResponse(b"abc", content_length=3),
+        ):
+            output_dir, results = download_directory(
+                "https://example.com/files/",
+                output_dir=temp_dir,
+            )
 
-            self.assertEqual(Path(temp_dir), output_dir)
-            self.assertEqual(["skipped"], [result.status for result in results])
-            history = load_refseq_history(history_path, input_root=temp_dir)
-            archive_entry = history["archives"]["alpha.txt"]
-            self.assertTrue(archive_entry["present_on_disk"])
-            self.assertEqual("skipped", archive_entry["last_download_status"])
-            self.assertEqual("pending", archive_entry["build_status"])
-
-    def test_download_directory_uses_history_to_skip_deleted_compiled_file(self):
-        with TemporaryDirectory() as temp_dir:
-            history_path = resolve_refseq_history_path(temp_dir)
-            history = load_refseq_history(history_path, input_root=temp_dir)
-            history["archives"]["alpha.txt"] = {
-                "file_name": "alpha.txt",
-                "relative_path": "alpha.txt",
-                "group_name": Path(temp_dir).name,
-                "kind": "unknown",
-                "build_status": "compiled",
-                "expected_size": 3,
-                "compiled_local_size": 3,
-                "compiled_modified_time_ns": 1,
-                "present_on_disk": False,
-            }
-            save_refseq_history(history_path, history)
-
-            with patch(
-                "libs.data.utilities.http_index_download.fetch_index_html",
-                return_value='<a href="alpha.txt">alpha.txt</a>',
-            ), patch(
-                "libs.data.utilities.http_index_download.urlopen",
-                return_value=_FakeResponse(b"abc", content_length=3),
-            ):
-                output_dir, results, saved_history_path = download_directory(
-                    "https://example.com/files/",
-                    output_dir=temp_dir,
-                )
-
-            self.assertEqual(Path(temp_dir), output_dir)
-            self.assertEqual(history_path, saved_history_path)
-            self.assertEqual(["recorded"], [result.status for result in results])
-            self.assertFalse(Path(temp_dir, "alpha.txt").exists())
-
-            history = load_refseq_history(history_path, input_root=temp_dir)
-            archive_entry = history["archives"]["alpha.txt"]
-            self.assertFalse(archive_entry["present_on_disk"])
-            self.assertEqual("recorded", archive_entry["last_download_status"])
-            self.assertEqual("compiled", archive_entry["build_status"])
+        self.assertEqual(temp_dir, output_dir)
+        self.assertEqual(["skipped"], [result.status for result in results])
+        self.assertFalse((temp_dir / "history.json").exists())
 
 
 if __name__ == "__main__":

@@ -47,7 +47,7 @@ uv run python cmd/build_refseq_profile_text.py ... --skip train,instruction.json
 
 `--skip train` requires an existing `train.txt` if `tokenizer_map.json` is still being written, because the tokenizer map is rebuilt from the on-disk training corpus when `train.txt` itself is skipped.
 
-Incremental updates use the same command. Re-running against the same output directory uses `summary.json` as the build state, skips already-recorded source bundles whose file size and modified time have not changed, reuses `instruction.jsonl` as the metadata-rich artifact, and updates `train.txt` without duplicating old lines.
+The compiler is append-only. Re-running against the same output directory appends the current batch into `train.txt` and `instruction.jsonl`, then rebuilds `tokenizer_map.json` from the on-disk `train.txt`. It does not use `summary.json` or `history.json`.
 
 If the output folder name matches a direct child folder under the input root, the build automatically scopes to that child folder. For example:
 
@@ -55,7 +55,7 @@ If the output folder name matches a direct child folder under the input root, th
 uv run python cmd/build_refseq_profile_text.py data/raw/refseq_bacteria_protein -o data/compiled/refseq_bacteria_protein/fungi
 ```
 
-This will only compile files under `data/raw/refseq_bacteria_protein/fungi` and keep the incremental state for that subset inside `data/compiled/refseq_bacteria_protein/fungi/summary.json`.
+This will only compile files under `data/raw/refseq_bacteria_protein/fungi` and append that subset into `data/compiled/refseq_bacteria_protein/fungi`.
 
 The maintained data workflow is command-line driven through `cmd/`. The older notebook-based data-fetch flow has been removed.
 
