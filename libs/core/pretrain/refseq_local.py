@@ -205,6 +205,38 @@ class RefseqLocalBuildSummary:
         }
 
 
+@dataclass(slots=True)
+class RefseqLocalArtifactDedupeSummary:
+    output_dir: str
+    train_text_path: str
+    instruction_path: str
+    original_train_line_count: int
+    deduped_train_line_count: int
+    removed_train_duplicates: int
+    original_instruction_line_count: int
+    deduped_instruction_line_count: int
+    removed_instruction_duplicates: int
+    train_text_changed: bool
+    instruction_changed: bool
+    dry_run: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "output_dir": self.output_dir,
+            "train_text_path": self.train_text_path,
+            "instruction_path": self.instruction_path,
+            "original_train_line_count": self.original_train_line_count,
+            "deduped_train_line_count": self.deduped_train_line_count,
+            "removed_train_duplicates": self.removed_train_duplicates,
+            "original_instruction_line_count": self.original_instruction_line_count,
+            "deduped_instruction_line_count": self.deduped_instruction_line_count,
+            "removed_instruction_duplicates": self.removed_instruction_duplicates,
+            "train_text_changed": self.train_text_changed,
+            "instruction_changed": self.instruction_changed,
+            "dry_run": self.dry_run,
+        }
+
+
 def build_local_refseq_profile_text_artifacts(
     input_root: Path | str,
     output_dir: Path | str,
@@ -418,6 +450,49 @@ def build_local_refseq_profile_text_artifacts(
     return summary
 
 
+def dedupe_local_refseq_sequence_only_artifacts(
+    output_dir: Path | str,
+    *,
+    dry_run: bool = False,
+) -> RefseqLocalArtifactDedupeSummary:
+    resolved_output_dir = Path(output_dir)
+    train_text_path = resolved_output_dir / TRAIN_TEXT_ARTIFACT_NAME
+    instruction_path = resolved_output_dir / INSTRUCTION_ARTIFACT_NAME
+
+    if not train_text_path.exists():
+        raise FileNotFoundError(f"train.txt was not found: {train_text_path}")
+    if not instruction_path.exists():
+        raise FileNotFoundError(f"instruction.jsonl was not found: {instruction_path}")
+
+    original_train_line_count, deduped_train_line_count, train_text_changed = _dedupe_text_file_in_place(
+        train_text_path,
+        dry_run=dry_run,
+    )
+    (
+        original_instruction_line_count,
+        deduped_instruction_line_count,
+        instruction_changed,
+    ) = _dedupe_text_file_in_place(
+        instruction_path,
+        dry_run=dry_run,
+    )
+    summary = RefseqLocalArtifactDedupeSummary(
+        output_dir=str(resolved_output_dir),
+        train_text_path=str(train_text_path),
+        instruction_path=str(instruction_path),
+        original_train_line_count=original_train_line_count,
+        deduped_train_line_count=deduped_train_line_count,
+        removed_train_duplicates=original_train_line_count - deduped_train_line_count,
+        original_instruction_line_count=original_instruction_line_count,
+        deduped_instruction_line_count=deduped_instruction_line_count,
+        removed_instruction_duplicates=original_instruction_line_count - deduped_instruction_line_count,
+        train_text_changed=train_text_changed,
+        instruction_changed=instruction_changed,
+        dry_run=dry_run,
+    )
+    return summary
+
+
 def _load_previous_compiled_records(
     *,
     instruction_path: Path,
@@ -457,6 +532,51 @@ def _normalize_output_artifact_names(
                 raise ValueError(f"Unsupported skip artifact '{token}'. Supported values: {supported}")
             normalized.add(artifact_name)
     return normalized
+
+
+def _dedupe_text_file_in_place(path: Path, *, dry_run: bool = False) -> tuple[int, int, bool]:
+    temp_path = path.with_name(f"{path.name}.dedupe.tmp")
+    temp_path.unlink(missing_ok=True)
+
+    seen: set[bytes] = set()
+    original_nonempty_line_count = 0
+    deduped_nonempty_line_count = 0
+    with path.open("rb") as source_handle, temp_path.open("wb") as target_handle:
+        for raw_line in source_handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            original_nonempty_line_count += 1
+            if line in seen:
+                continue
+            seen.add(line)
+            deduped_nonempty_line_count += 1
+            target_handle.write(line)
+            target_handle.write(b"\n")
+
+    changed = not _paths_have_same_content(path, temp_path)
+    if dry_run or not changed:
+        temp_path.unlink(missing_ok=True)
+    else:
+        temp_path.replace(path)
+
+    return original_nonempty_line_count, deduped_nonempty_line_count, changed
+
+
+def _paths_have_same_content(left_path: Path, right_path: Path, *, chunk_size: int = 1_048_576) -> bool:
+    if not left_path.exists() or not right_path.exists():
+        return False
+    if left_path.stat().st_size != right_path.stat().st_size:
+        return False
+
+    with left_path.open("rb") as left_handle, right_path.open("rb") as right_handle:
+        while True:
+            left_chunk = left_handle.read(chunk_size)
+            right_chunk = right_handle.read(chunk_size)
+            if left_chunk != right_chunk:
+                return False
+            if not left_chunk:
+                return True
 
 
 def _render_train_text(records: list[RefseqCompiledRecord]) -> str:

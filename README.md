@@ -49,6 +49,15 @@ uv run python cmd/build_refseq_profile_text.py ... --skip train,instruction.json
 
 The compiler is append-only. Re-running against the same output directory appends the current batch into `train.txt` and `instruction.jsonl`, then rebuilds `tokenizer_map.json` from the on-disk `train.txt`. It does not use `summary.json` or `history.json`.
 
+If you need to collapse duplicates introduced by repeated append-only runs, use the dedupe command:
+
+```powershell
+cmd\dedupe_refseq_profile_text.cmd data\compiled\refseq_bacteria_protein
+cmd\dedupe_refseq_profile_text.cmd data\compiled\refseq_bacteria_protein --dry-run
+```
+
+The dedupe pass removes duplicate non-empty lines from both `train.txt` and `instruction.jsonl` while preserving the first occurrence. It only touches those two files so the pass stays I/O-bound and fast on large append-only corpora.
+
 If the output folder name matches a direct child folder under the input root, the build automatically scopes to that child folder. For example:
 
 ```bash

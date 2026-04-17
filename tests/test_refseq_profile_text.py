@@ -8,7 +8,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from libs.core.pretrain import refseq_local
-from libs.core.pretrain.refseq_local import build_local_refseq_profile_text_artifacts
+from libs.core.pretrain.refseq_local import (
+    build_local_refseq_profile_text_artifacts,
+    dedupe_local_refseq_sequence_only_artifacts,
+)
 from libs.data.training import SequenceTokenizer
 
 
@@ -371,6 +374,121 @@ class RefseqProfileTextTests(unittest.TestCase):
     def test_windows_parallel_path_uses_thread_pool(self) -> None:
         with patch.object(refseq_local.os, "name", "nt"):
             self.assertIs(refseq_local.ThreadPoolExecutor, refseq_local._executor_class_for_parallelism())
+
+    def test_dedupe_sequence_only_artifacts_rewrites_train_and_instruction_only(self) -> None:
+        self._write_refseq_bundle(record_count=3, updated_accessions={})
+        build_summary = build_local_refseq_profile_text_artifacts(
+            self.input_root,
+            self.output_dir,
+            vocab_size=64,
+            instruction_min_proteins=1,
+        )
+
+        train_path = Path(build_summary.train_text_path)
+        instruction_path = Path(build_summary.instruction_path)
+        tokenizer_map_path = Path(build_summary.tokenizer_map_path)
+        original_tokenizer_map_text = tokenizer_map_path.read_text(encoding="utf-8")
+
+        original_train_lines = train_path.read_text(encoding="utf-8").splitlines()
+        train_path.write_text(
+            "\n".join(
+                (
+                    original_train_lines[0],
+                    original_train_lines[0],
+                    "",
+                    original_train_lines[1],
+                    original_train_lines[1],
+                    original_train_lines[2],
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        original_instruction_lines = instruction_path.read_text(encoding="utf-8").splitlines()
+        instruction_path.write_text(
+            "\n".join(
+                (
+                    original_instruction_lines[0],
+                    original_instruction_lines[0],
+                    "",
+                    original_instruction_lines[1],
+                    original_instruction_lines[2],
+                    original_instruction_lines[1],
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        dedupe_summary = dedupe_local_refseq_sequence_only_artifacts(self.output_dir)
+
+        self.assertEqual(5, dedupe_summary.original_train_line_count)
+        self.assertEqual(3, dedupe_summary.deduped_train_line_count)
+        self.assertEqual(2, dedupe_summary.removed_train_duplicates)
+        self.assertEqual(5, dedupe_summary.original_instruction_line_count)
+        self.assertEqual(3, dedupe_summary.deduped_instruction_line_count)
+        self.assertEqual(2, dedupe_summary.removed_instruction_duplicates)
+        self.assertTrue(dedupe_summary.train_text_changed)
+        self.assertTrue(dedupe_summary.instruction_changed)
+        self.assertFalse(dedupe_summary.dry_run)
+
+        self.assertEqual(original_train_lines, train_path.read_text(encoding="utf-8").splitlines())
+        self.assertEqual(
+            original_instruction_lines,
+            instruction_path.read_text(encoding="utf-8").splitlines(),
+        )
+        self.assertEqual(
+            original_tokenizer_map_text,
+            tokenizer_map_path.read_text(encoding="utf-8"),
+        )
+
+    def test_dedupe_sequence_only_artifacts_dry_run_keeps_files_unchanged(self) -> None:
+        self._write_refseq_bundle(record_count=2, updated_accessions={})
+        build_summary = build_local_refseq_profile_text_artifacts(
+            self.input_root,
+            self.output_dir,
+            vocab_size=64,
+            instruction_min_proteins=1,
+        )
+
+        train_path = Path(build_summary.train_text_path)
+        instruction_path = Path(build_summary.instruction_path)
+        original_train_lines = train_path.read_text(encoding="utf-8").splitlines()
+        original_instruction_lines = instruction_path.read_text(encoding="utf-8").splitlines()
+
+        train_path.write_text(
+            "\n".join((original_train_lines[0], original_train_lines[0], original_train_lines[1])) + "\n",
+            encoding="utf-8",
+        )
+        instruction_path.write_text(
+            "\n".join(
+                (
+                    original_instruction_lines[0],
+                    original_instruction_lines[0],
+                    original_instruction_lines[1],
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        duplicated_train_text = train_path.read_text(encoding="utf-8")
+        duplicated_instruction_text = instruction_path.read_text(encoding="utf-8")
+
+        dedupe_summary = dedupe_local_refseq_sequence_only_artifacts(self.output_dir, dry_run=True)
+
+        self.assertEqual(3, dedupe_summary.original_train_line_count)
+        self.assertEqual(2, dedupe_summary.deduped_train_line_count)
+        self.assertEqual(3, dedupe_summary.original_instruction_line_count)
+        self.assertEqual(2, dedupe_summary.deduped_instruction_line_count)
+        self.assertTrue(dedupe_summary.train_text_changed)
+        self.assertTrue(dedupe_summary.instruction_changed)
+        self.assertTrue(dedupe_summary.dry_run)
+        self.assertEqual(duplicated_train_text, train_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            duplicated_instruction_text,
+            instruction_path.read_text(encoding="utf-8"),
+        )
 
     def _write_refseq_bundle(
         self,
