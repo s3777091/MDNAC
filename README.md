@@ -56,6 +56,11 @@ cmd\dedupe_refseq_profile_text.cmd data\compiled\refseq_bacteria_protein
 cmd\dedupe_refseq_profile_text.cmd data\compiled\refseq_bacteria_protein --dry-run
 ```
 
+```bash
+bash cmd/dedupe_refseq_profile_text.sh data/compiled/refseq_bacteria_protein
+bash cmd/dedupe_refseq_profile_text.sh data/compiled/refseq_bacteria_protein --dry-run
+```
+
 The dedupe pass removes duplicate non-empty lines from both `train.txt` and `instruction.jsonl` while preserving the first occurrence. It only touches those two files so the pass stays I/O-bound and fast on large append-only corpora.
 
 If the output folder name matches a direct child folder under the input root, the build automatically scopes to that child folder. For example:
