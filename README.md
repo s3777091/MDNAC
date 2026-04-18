@@ -63,6 +63,20 @@ bash cmd/dedupe_refseq_profile_text.sh data/compiled/refseq_bacteria_protein --d
 
 The dedupe pass removes duplicate non-empty lines from both `train.txt` and `instruction.jsonl` while preserving the first occurrence. It only touches those two files so the pass stays I/O-bound and fast on large append-only corpora.
 
+If `instruction.jsonl` is too large to train on directly, downsample it with a streaming two-pass sampler that preserves coverage across `dataset_group x product` buckets while compressing extremely repeated proteins:
+
+```powershell
+cmd\downsample_instruction_jsonl.cmd data\instruction.jsonl -o data\instruction.50pct.jsonl --keep-ratio 0.5 --alpha 0.8
+cmd\downsample_instruction_jsonl.cmd data\instruction.jsonl --dry-run --keep-ratio 0.5
+```
+
+```bash
+bash cmd/downsample_instruction_jsonl.sh data/instruction.jsonl -o data/instruction.50pct.jsonl --keep-ratio 0.5 --alpha 0.8
+bash cmd/downsample_instruction_jsonl.sh data/instruction.jsonl --dry-run --keep-ratio 0.5
+```
+
+Unlike chopping the file head/tail, this keeps at least one example per protein bucket, preserves dataset-group balance, and spreads selected records across each bucket with deterministic systematic sampling.
+
 If the output folder name matches a direct child folder under the input root, the build automatically scopes to that child folder. For example:
 
 ```bash
