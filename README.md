@@ -63,6 +63,20 @@ bash cmd/dedupe_refseq_profile_text.sh data/compiled/refseq_bacteria_protein --d
 
 The dedupe pass removes duplicate non-empty lines from both `train.txt` and `instruction.jsonl` while preserving the first occurrence. It only touches those two files so the pass stays I/O-bound and fast on large append-only corpora.
 
+If you already have separate corpus shards and only want to join them, use the concat command:
+
+```powershell
+cmd\concat_text_files.cmd data\a\instruction.jsonl data\b\instruction.jsonl -o data\instruction.merged.jsonl
+cmd\concat_text_files.cmd data\a\train.txt data\b\train.txt -o data\train.merged.txt --overwrite
+```
+
+```bash
+bash cmd/concat_text_files.sh data/a/instruction.jsonl data/b/instruction.jsonl -o data/instruction.merged.jsonl
+bash cmd/concat_text_files.sh data/a/train.txt data/b/train.txt -o data/train.merged.txt --overwrite
+```
+
+This is a streaming file concatenation pass. It keeps input order, does not parse JSONL, does not validate records, and does not remove duplicate lines. By default it inserts one separator newline only when a file boundary would otherwise glue two records together. Add `--raw` for exact byte concatenation.
+
 If `instruction.jsonl` is too large to train on directly, downsample it with a streaming two-pass sampler that preserves coverage across `dataset_group x product` buckets while compressing extremely repeated proteins:
 
 ```powershell
