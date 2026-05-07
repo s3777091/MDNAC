@@ -206,6 +206,24 @@ class RefseqLocalBuildSummary:
 
 
 @dataclass(slots=True)
+class RefseqTokenizerMapBuildSummary:
+    output_dir: str
+    train_text_path: str
+    tokenizer_map_path: str
+    record_count: int
+    vocab_size_requested: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "output_dir": self.output_dir,
+            "train_text_path": self.train_text_path,
+            "tokenizer_map_path": self.tokenizer_map_path,
+            "record_count": self.record_count,
+            "vocab_size_requested": self.vocab_size_requested,
+        }
+
+
+@dataclass(slots=True)
 class RefseqLocalArtifactDedupeSummary:
     output_dir: str
     train_text_path: str
@@ -405,7 +423,7 @@ def build_local_refseq_profile_text_artifacts(
         _append_train_text_artifact(train_text_path, kept_records)
 
     if write_tokenizer_map:
-        tokenizer_train_text = train_text_path.read_text(encoding="utf-8")
+        tokenizer_train_text = _read_train_text_for_tokenizer_map(train_text_path)
         tokenizer_map_text = _render_tokenizer_map_text(
             tokenizer_train_text,
             source_name=source_name,
@@ -448,6 +466,47 @@ def build_local_refseq_profile_text_artifacts(
         max_records=max_records,
     )
     return summary
+
+
+def rebuild_local_refseq_tokenizer_map_from_train_text(
+    output_dir: Path | str,
+    *,
+    source_name: str = "refseq",
+    vocab_size: int | None = None,
+    profile_vocab_size: int = 256,
+) -> RefseqTokenizerMapBuildSummary:
+    resolved_output_dir = Path(output_dir)
+    train_text_path = resolved_output_dir / TRAIN_TEXT_ARTIFACT_NAME
+    tokenizer_map_path = resolved_output_dir / TOKENIZER_MAP_ARTIFACT_NAME
+    if not train_text_path.exists():
+        raise FileNotFoundError(f"train.txt was not found: {train_text_path}")
+
+    train_text = _read_train_text_for_tokenizer_map(train_text_path)
+    record_count = _count_nonempty_lines(train_text)
+    if record_count <= 0:
+        raise ValueError(f"Cannot build tokenizer_map.json from an empty train.txt file: {train_text_path}")
+
+    effective_vocab_size = profile_vocab_size if vocab_size is None else vocab_size
+    tokenizer_map_text = _render_tokenizer_map_text(
+        train_text,
+        source_name=source_name,
+        vocab_size=effective_vocab_size,
+        builder_metadata={
+            "type": "local_refseq_sequence_only_from_train_txt",
+            "source_name": source_name,
+            "tokenizer_type": "bpe",
+            "vocab_size_requested": effective_vocab_size,
+            "rebuilt_from_existing_train_text": True,
+        },
+    )
+    _write_text_if_changed(tokenizer_map_path, tokenizer_map_text)
+    return RefseqTokenizerMapBuildSummary(
+        output_dir=str(resolved_output_dir),
+        train_text_path=str(train_text_path),
+        tokenizer_map_path=str(tokenizer_map_path),
+        record_count=record_count,
+        vocab_size_requested=effective_vocab_size,
+    )
 
 
 def dedupe_local_refseq_sequence_only_artifacts(
@@ -581,6 +640,10 @@ def _paths_have_same_content(left_path: Path, right_path: Path, *, chunk_size: i
 
 def _render_train_text(records: list[RefseqCompiledRecord]) -> str:
     return "\n".join(record.sequence_train_line for record in records) + "\n"
+
+
+def _read_train_text_for_tokenizer_map(path: Path) -> str:
+    return path.read_text(encoding="utf-8").removeprefix("\ufeff")
 
 
 def _render_tokenizer_map_text(

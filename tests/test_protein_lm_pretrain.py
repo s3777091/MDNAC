@@ -1,0 +1,173 @@
+from __future__ import annotations
+
+import shutil
+import unittest
+from pathlib import Path
+
+import torch
+
+from libs.core import (
+    MDCDecoderModel,
+    QWEN3_5_BACKBONE_FAMILY,
+    QWEN3_5_PROTEIN_MODEL_FAMILY,
+    build_mdc_config_from_qwen3_5_config,
+    build_or_load_protein_tokenizer,
+    build_qwen3_5_config,
+    compute_mdc_causal_lm_loss,
+    create_protein_lm_dataloader,
+    load_protein_corpus_text,
+    load_protein_pretrain_checkpoint,
+    save_protein_pretrain_checkpoint,
+    split_protein_corpus_text,
+)
+
+
+class ProteinLMPretrainTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path("tests/artifacts/protein-lm-pretrain")
+        shutil.rmtree(self.root, ignore_errors=True)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.train_path = self.root / "train.txt"
+        self.train_path.write_text(
+            (
+                "<|protein|>MPEPTIDE<|endoftext|>\n"
+                "<|protein|>GLYSERQ<|endoftext|>\n"
+                "<|protein|>MVLSPADKTN<|endoftext|>\n"
+            ),
+            encoding="utf-8",
+        )
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_builds_and_reuses_self_built_protein_tokenizer(self) -> None:
+        artifact = build_or_load_protein_tokenizer(self.train_path, vocab_size=64)
+
+        self.assertTrue(artifact.rebuilt)
+        self.assertTrue(artifact.tokenizer_map_path.exists())
+        self.assertEqual("protein", artifact.tokenizer.sequence_type)
+        self.assertEqual(
+            "<|protein|>MPEPTIDE<|endoftext|>",
+            artifact.tokenizer.decode(artifact.tokenizer.encode("<|protein|>MPEPTIDE<|endoftext|>")),
+        )
+
+        loaded = build_or_load_protein_tokenizer(self.train_path, vocab_size=64)
+        self.assertFalse(loaded.rebuilt)
+        self.assertEqual(artifact.vocab_size, loaded.vocab_size)
+
+    def test_builds_qwen3_5_config_for_protein_mdc_model(self) -> None:
+        tokenizer_artifact = build_or_load_protein_tokenizer(self.train_path, vocab_size=64)
+        qwen_config = build_qwen3_5_config(
+            "0.8B",
+            vocab_size=tokenizer_artifact.vocab_size,
+            context_length=16,
+            dtype=torch.float32,
+        )
+
+        self.assertEqual("Qwen/Qwen3.5-0.8B", qwen_config["model_name"])
+        self.assertEqual(QWEN3_5_BACKBONE_FAMILY, qwen_config["backbone_family"])
+        self.assertEqual(1024, qwen_config["emb_dim"])
+        self.assertEqual(24, qwen_config["n_layers"])
+        self.assertTrue(bool(qwen_config["qk_norm"]))
+
+        tiny_qwen_config = {
+            **qwen_config,
+            "emb_dim": 32,
+            "n_heads": 4,
+            "n_layers": 2,
+            "hidden_dim": 64,
+            "head_dim": 8,
+            "n_kv_groups": 2,
+            "linear_key_head_dim": 8,
+            "linear_value_head_dim": 8,
+            "linear_num_key_heads": 2,
+            "linear_num_value_heads": 2,
+        }
+        model_config = build_mdc_config_from_qwen3_5_config(
+            tiny_qwen_config,
+            dtype=torch.float32,
+        )
+
+        self.assertEqual(tokenizer_artifact.vocab_size, model_config.vocab_size)
+        self.assertEqual(("linear_attention", "linear_attention"), model_config.layer_types)
+        self.assertEqual(8, model_config.head_dim)
+        self.assertTrue(model_config.qk_norm)
+
+    def test_trains_one_batch_and_resumes_checkpoint(self) -> None:
+        corpus = load_protein_corpus_text(self.train_path)
+        train_text, _ = split_protein_corpus_text(corpus, train_ratio=0.67)
+        tokenizer_artifact = build_or_load_protein_tokenizer(self.train_path, vocab_size=64)
+        data_loader = create_protein_lm_dataloader(
+            train_text,
+            tokenizer_artifact.tokenizer,
+            context_length=12,
+            stride=6,
+            batch_size=2,
+            shuffle=False,
+        )
+
+        base_config = build_qwen3_5_config(
+            "0.8B",
+            vocab_size=tokenizer_artifact.vocab_size,
+            context_length=12,
+            dtype=torch.float32,
+        )
+        model_config = build_mdc_config_from_qwen3_5_config(
+            {
+                **base_config,
+                "emb_dim": 32,
+                "n_heads": 4,
+                "n_layers": 2,
+                "hidden_dim": 64,
+                "head_dim": 8,
+                "n_kv_groups": 2,
+                "linear_key_head_dim": 8,
+                "linear_value_head_dim": 8,
+                "linear_num_key_heads": 2,
+                "linear_num_value_heads": 2,
+            },
+            dtype=torch.float32,
+        )
+        model = MDCDecoderModel(model_config)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+        batch = next(iter(data_loader))
+        optimizer.zero_grad(set_to_none=True)
+        logits = model(batch.input_ids, attn_mask=batch.attention_mask)
+        loss = compute_mdc_causal_lm_loss(logits, batch.labels)
+        loss.backward()
+        optimizer.step()
+
+        self.assertTrue(torch.isfinite(loss.detach()))
+
+        checkpoint_path = save_protein_pretrain_checkpoint(
+            self.root / "checkpoint_last.pt",
+            model=model,
+            optimizer=optimizer,
+            model_config=model_config,
+            tokenizer=tokenizer_artifact.tokenizer,
+            tokenizer_map_path=tokenizer_artifact.tokenizer_map_path,
+            epoch=1,
+            global_step=1,
+            tokens_seen=int(batch.attention_mask.sum().item()),
+            train_losses=[float(loss.item())],
+            val_losses=[],
+            training_args={"context_length": 12},
+        )
+
+        resumed_model = MDCDecoderModel(model_config)
+        resumed_optimizer = torch.optim.AdamW(resumed_model.parameters(), lr=1e-3)
+        checkpoint = load_protein_pretrain_checkpoint(
+            checkpoint_path,
+            model=resumed_model,
+            optimizer=resumed_optimizer,
+        )
+
+        self.assertEqual(QWEN3_5_PROTEIN_MODEL_FAMILY, checkpoint["model_family"])
+        self.assertEqual(QWEN3_5_BACKBONE_FAMILY, checkpoint["backbone_family"])
+        self.assertEqual(1, checkpoint["global_step"])
+        self.assertEqual(str(tokenizer_artifact.tokenizer_map_path.resolve()), checkpoint["tokenizer_map_path"])
+
+
+if __name__ == "__main__":
+    unittest.main()

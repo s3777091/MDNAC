@@ -3,7 +3,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from libs.core.pretrain.refseq_local import build_local_refseq_profile_text_artifacts
+from libs.core.pretrain.refseq_local import (
+    build_local_refseq_profile_text_artifacts,
+    rebuild_local_refseq_tokenizer_map_from_train_text,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -80,20 +83,56 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help=(
             "Skip writing specific artifacts. Accepts comma-separated values and can be repeated. "
-            "Supported values: train, train.txt, tokenizer_map.json, instruction.jsonl."
+            "Supported values: train, train.txt, tokenizer_map.json, instruction.jsonl. "
+            "Use --rebuild-tokenizer-map-from-train when you only need tokenizer_map.json from an "
+            "existing train.txt."
+        ),
+    )
+    parser.add_argument(
+        "--rebuild-tokenizer-map-from-train",
+        action="store_true",
+        help=(
+            "Ignore RefSeq input archives and rebuild tokenizer_map.json only from the existing "
+            "train.txt under --output-dir."
         ),
     )
     return parser
 
 
+def _skip_mentions_tokenizer_map(skip_values: list[str]) -> bool:
+    for raw_value in skip_values:
+        for token in str(raw_value).split(","):
+            normalized = token.strip().lower()
+            if normalized in {"tokenizer_map", "tokenizer", "tokenizer_map.json"}:
+                return True
+    return False
+
+
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    effective_vocab_size = args.vocab_size if args.profile_vocab_size is None else args.profile_vocab_size
+
+    if args.rebuild_tokenizer_map_from_train:
+        if _skip_mentions_tokenizer_map(args.skip):
+            parser.error("--rebuild-tokenizer-map-from-train cannot be combined with --skip tokenizer_map.json.")
+
+        summary = rebuild_local_refseq_tokenizer_map_from_train_text(
+            args.output_dir,
+            vocab_size=effective_vocab_size,
+        )
+        print("[mode] rebuild-tokenizer-map-from-train")
+        print(f"[output] {summary.output_dir}")
+        print(f"[train.txt] {summary.train_text_path}")
+        print(f"[tokenizer_map.json] {summary.tokenizer_map_path}")
+        print(f"[records] {summary.record_count}")
+        print(f"[vocab_size_requested] {summary.vocab_size_requested}")
+        return 0
 
     summary = build_local_refseq_profile_text_artifacts(
         args.input_root,
         args.output_dir,
-        vocab_size=args.vocab_size if args.profile_vocab_size is None else args.profile_vocab_size,
+        vocab_size=effective_vocab_size,
         instruction_min_proteins=args.instruction_min_proteins,
         kmer_size=args.kmer_size,
         profile_vocab_size=args.profile_vocab_size,

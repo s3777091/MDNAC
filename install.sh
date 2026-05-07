@@ -42,4 +42,4 @@ uv sync --frozen --python 3.11 "$@"
 echo
 echo "Environment is ready."
 echo "Run the RefSeq compiler with:"
-echo "bash cmd/build_refseq_profile_text.sh data/raw/refseq_bacteria_protein -o data/compiled/refseq_bacteria_protein/fungi/package_1 --vocab-size 256 --instruction-min-proteins 5 --workers 8 --skip tokenizer_map.json"
+echo "bash cmd/build_refseq_profile_text.sh data/raw/refseq_bacteria_protein -o data/compiled/refseq_bacteria_protein/fungi/package_1 --vocab-size 256 --instruction-min-proteins 5 --workers 8"

@@ -11,6 +11,7 @@ from libs.core.pretrain import refseq_local
 from libs.core.pretrain.refseq_local import (
     build_local_refseq_profile_text_artifacts,
     dedupe_local_refseq_sequence_only_artifacts,
+    rebuild_local_refseq_tokenizer_map_from_train_text,
 )
 from libs.data.training import SequenceTokenizer
 
@@ -243,6 +244,51 @@ class RefseqProfileTextTests(unittest.TestCase):
         )
         tokenizer = SequenceTokenizer.load_map(second_summary.tokenizer_map_path)
         self.assertEqual(original_train_text, tokenizer.decode(tokenizer.encode(original_train_text)))
+
+    def test_rebuild_tokenizer_map_from_existing_train_text_without_refseq_input(self) -> None:
+        self._write_refseq_bundle(record_count=3, updated_accessions={})
+        initial_summary = build_local_refseq_profile_text_artifacts(
+            self.input_root,
+            self.output_dir,
+            vocab_size=64,
+            instruction_min_proteins=1,
+        )
+        original_train_text = Path(initial_summary.train_text_path).read_text(encoding="utf-8")
+        original_instruction_text = Path(initial_summary.instruction_path).read_text(encoding="utf-8")
+        shutil.rmtree(self.input_root)
+        Path(initial_summary.tokenizer_map_path).unlink()
+
+        rebuild_summary = rebuild_local_refseq_tokenizer_map_from_train_text(
+            self.output_dir,
+            vocab_size=64,
+        )
+
+        self.assertEqual(3, rebuild_summary.record_count)
+        self.assertEqual(original_train_text, Path(rebuild_summary.train_text_path).read_text(encoding="utf-8"))
+        self.assertEqual(
+            original_instruction_text,
+            Path(initial_summary.instruction_path).read_text(encoding="utf-8"),
+        )
+        tokenizer = SequenceTokenizer.load_map(rebuild_summary.tokenizer_map_path)
+        self.assertEqual(original_train_text, tokenizer.decode(tokenizer.encode(original_train_text)))
+
+    def test_rebuild_tokenizer_map_from_train_text_tolerates_utf8_bom(self) -> None:
+        train_path = self.output_dir / "train.txt"
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        train_path.write_text(
+            "\ufeff<|protein|>MPEPTIDE<|endoftext|>\n<|protein|>MGLYSEQ<|endoftext|>\n",
+            encoding="utf-8",
+        )
+
+        rebuild_summary = rebuild_local_refseq_tokenizer_map_from_train_text(
+            self.output_dir,
+            vocab_size=32,
+        )
+
+        self.assertEqual(2, rebuild_summary.record_count)
+        tokenizer = SequenceTokenizer.load_map(rebuild_summary.tokenizer_map_path)
+        clean_train_text = "<|protein|>MPEPTIDE<|endoftext|>\n<|protein|>MGLYSEQ<|endoftext|>\n"
+        self.assertEqual(clean_train_text, tokenizer.decode(tokenizer.encode(clean_train_text)))
 
     def test_skip_instruction_keeps_existing_instruction_file(self) -> None:
         package_one_dir = self.input_root / "package_1"

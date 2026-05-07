@@ -43,11 +43,27 @@ Use `--skip` when you only want to refresh part of the output set:
 ```bash
 uv run python cmd/build_refseq_profile_text.py ... --skip tokenizer_map.json
 uv run python cmd/build_refseq_profile_text.py ... --skip train,instruction.jsonl
+uv run python cmd/build_refseq_profile_text.py --rebuild-tokenizer-map-from-train -o data/compiled/refseq_bacteria_protein
 ```
+
+`--skip tokenizer_map.json` means do not write `tokenizer_map.json`.
 
 `--skip train` requires an existing `train.txt` if `tokenizer_map.json` is still being written, because the tokenizer map is rebuilt from the on-disk training corpus when `train.txt` itself is skipped.
 
+`--rebuild-tokenizer-map-from-train` is the explicit mode for rebuilding only `tokenizer_map.json` from the existing `train.txt` inside `--output-dir`, without rescanning the RefSeq archives.
+
 The compiler is append-only. Re-running against the same output directory appends the current batch into `train.txt` and `instruction.jsonl`, then rebuilds `tokenizer_map.json` from the on-disk `train.txt`. It does not use `summary.json` or `history.json`.
+
+## Protein Pretraining
+
+Stage 2 notebooks now use the protein-only flow:
+
+- `notebooks/stage_2_foundation_model/03_pretrain_protein_from_scratch.ipynb`
+- `notebooks/stage_2_foundation_model/04_resume_protein_pretrain.ipynb`
+- `notebooks/stage_2_foundation_model/06_model_evaluation/06_top1_benchmark.ipynb`
+- `notebooks/stage_2_foundation_model/06_model_evaluation/07_plot_metrics.ipynb`
+
+The notebooks call `libs.core` helpers to build or load the protein `SequenceTokenizer`, create causal-LM batches from `train.txt`, instantiate Qwen3.5-style backbone configs for the MDC decoder, save/load resumable `qwen3_5_protein_lm` checkpoints, and benchmark protein next-token accuracy.
 
 If you need to collapse duplicates introduced by repeated append-only runs, use the dedupe command:
 
@@ -195,7 +211,7 @@ The dataloader yields masked causal-LM batches where the loss is applied to the 
 
 ## Tokenizer style
 
-The tokenizer implementation in `libs/data/training/tokenizer.py` keeps the simple `encode` / `decode` interface from `LLMs-from-scratch`, but now follows the BPE direction discussed later in chapter 2:
+The tokenizer implementation in `libs/data/training/tokenizer.py` keeps a simple `encode` / `decode` interface, but now follows the BPE direction discussed later in chapter 2:
 
 - `str_to_int`
 - `int_to_str`
@@ -332,7 +348,7 @@ bash install.sh
 The Linux equivalent of `cmd/build_refseq_profile_text.cmd` is:
 
 ```bash
-bash cmd/build_refseq_profile_text.sh data/raw/refseq_bacteria_protein -o data/compiled/refseq_bacteria_protein/fungi/package_1 --vocab-size 256 --instruction-min-proteins 5 --workers 8 --skip tokenizer_map.json
+bash cmd/build_refseq_profile_text.sh data/raw/refseq_bacteria_protein -o data/compiled/refseq_bacteria_protein/fungi/package_1 --vocab-size 256 --instruction-min-proteins 5 --workers 8
 ```
 
 No notebook dependencies are installed by default.
