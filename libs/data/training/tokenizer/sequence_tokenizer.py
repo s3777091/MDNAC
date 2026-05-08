@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 from array import array
 from collections import Counter
@@ -163,8 +164,15 @@ class SequenceTokenizer:
         id_typecode = _array_typecode_for_vocab_size(target_vocab_size)
         temp_parent = Path(cache_dir) if cache_dir is not None else None
 
-        with tempfile.TemporaryDirectory(prefix="sequence-tokenizer-", dir=temp_parent) as temp_root:
-            cache_path = Path(temp_root) / "tokens.bin"
+        cache_descriptor, cache_name = tempfile.mkstemp(
+            prefix="sequence-tokenizer-",
+            suffix=".bin",
+            dir=temp_parent,
+        )
+        os.close(cache_descriptor)
+        cache_path = Path(cache_name)
+        rewritten_cache_path = cache_path.with_name(f"{cache_path.name}.rewrite")
+        try:
             stats = self._write_token_cache_from_text_file(
                 source_path,
                 cache_path,
@@ -192,16 +200,6 @@ class SequenceTokenizer:
                     progress_interval_bytes=progress_interval_bytes,
                 )
                 if not pair_counts:
-                    _emit_progress(
-                        progress_callback,
-                        {
-                            "event": "bpe_complete",
-                            "reason": "no_pairs",
-                            "vocab_size": self.vocab_size,
-                            "target_vocab_size": target_vocab_size,
-                            "merge_count": len(self.merge_ranks),
-                        },
-                    )
                     completed_reason = "no_pairs"
                     break
 
@@ -234,7 +232,7 @@ class SequenceTokenizer:
                     },
                 )
 
-                rewritten_cache_path = cache_path.with_suffix(".rewrite")
+                rewritten_cache_path.unlink(missing_ok=True)
                 self._rewrite_token_cache_with_merge(
                     cache_path,
                     rewritten_cache_path,
@@ -247,7 +245,10 @@ class SequenceTokenizer:
                     progress_callback=progress_callback,
                     progress_interval_bytes=progress_interval_bytes,
                 )
-                rewritten_cache_path.replace(cache_path)
+                old_cache_path = cache_path
+                old_cache_path.unlink()
+                cache_path = rewritten_cache_path
+                rewritten_cache_path = old_cache_path
 
             _emit_progress(
                 progress_callback,
@@ -260,6 +261,9 @@ class SequenceTokenizer:
                 },
             )
             return stats
+        finally:
+            cache_path.unlink(missing_ok=True)
+            rewritten_cache_path.unlink(missing_ok=True)
 
     def _write_token_cache_from_text_file(
         self,
