@@ -6,9 +6,9 @@ import hashlib
 import json
 import re
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterator
 
 from libs.core.pretrain.profiled import (
     MDCProfileCompilerConfig,
@@ -16,7 +16,7 @@ from libs.core.pretrain.profiled import (
     build_profile_text_from_sequence_metadata,
 )
 from libs.data.training.kmer import _normalize_sequence as normalize_sequence
-from libs.data.training.tokenizer import SequenceTokenizer
+from libs.data.training.tokenizer import SequenceTokenizer, SequenceTokenizerTextTrainingStats
 from libs.data.utilities.parsers import ParsedFastaEntry, iter_fasta_entries
 from libs.data.utilities.storage import render_tokenizer_map_payload
 
@@ -78,6 +78,7 @@ OUTPUT_ARTIFACT_ALIASES = {
 PARALLEL_MIN_RECORDS = 25_000
 PARALLEL_TARGET_CHUNKS_PER_WORKER = 2
 PARALLEL_MIN_CHUNK_SIZE = 2_000
+TokenizerProgressCallback = Callable[[dict[str, object]], None]
 
 
 @dataclass(slots=True, frozen=True)
@@ -211,6 +212,7 @@ class RefseqTokenizerMapBuildSummary:
     train_text_path: str
     tokenizer_map_path: str
     record_count: int
+    tokenizer_train_record_count: int
     vocab_size_requested: int
 
     def to_dict(self) -> dict[str, object]:
@@ -219,6 +221,7 @@ class RefseqTokenizerMapBuildSummary:
             "train_text_path": self.train_text_path,
             "tokenizer_map_path": self.tokenizer_map_path,
             "record_count": self.record_count,
+            "tokenizer_train_record_count": self.tokenizer_train_record_count,
             "vocab_size_requested": self.vocab_size_requested,
         }
 
@@ -269,11 +272,17 @@ def build_local_refseq_profile_text_artifacts(
     profile_config: MDCProfileCompilerConfig | None = None,
     workers: int = 1,
     skip_artifacts: str | tuple[str, ...] | list[str] | set[str] | None = None,
+    tokenizer_train_line_limit: int | None = None,
+    tokenizer_progress_callback: TokenizerProgressCallback | None = None,
 ) -> RefseqLocalBuildSummary:
     del kmer_size, profile_sample_char_limit
 
     if instruction_min_proteins <= 0:
         raise ValueError("instruction_min_proteins must be greater than 0.")
+    _validate_optional_positive_int(
+        tokenizer_train_line_limit,
+        name="tokenizer_train_line_limit",
+    )
     effective_workers = _resolve_worker_count(workers)
     skipped_artifact_names = _normalize_output_artifact_names(skip_artifacts)
 
@@ -423,13 +432,17 @@ def build_local_refseq_profile_text_artifacts(
         _append_train_text_artifact(train_text_path, kept_records)
 
     if write_tokenizer_map:
-        tokenizer_train_text = _read_train_text_for_tokenizer_map(train_text_path)
-        tokenizer_map_text = _render_tokenizer_map_text(
-            tokenizer_train_text,
+        tokenizer_map_text, tokenizer_training_stats = _render_tokenizer_map_text_from_train_path(
+            train_text_path,
             source_name=source_name,
             vocab_size=effective_vocab_size,
             builder_metadata=builder_metadata,
+            tokenizer_train_line_limit=tokenizer_train_line_limit,
+            cache_dir=resolved_output_dir,
+            progress_callback=tokenizer_progress_callback,
         )
+        if tokenizer_training_stats.record_count <= 0:
+            raise ValueError(f"Cannot build tokenizer_map.json from an empty train.txt file: {train_text_path}")
         _write_text_if_changed(tokenizer_map_path, tokenizer_map_text)
 
     if write_instruction_jsonl:
@@ -474,21 +487,22 @@ def rebuild_local_refseq_tokenizer_map_from_train_text(
     source_name: str = "refseq",
     vocab_size: int | None = None,
     profile_vocab_size: int = 256,
+    tokenizer_train_line_limit: int | None = None,
+    tokenizer_progress_callback: TokenizerProgressCallback | None = None,
 ) -> RefseqTokenizerMapBuildSummary:
+    _validate_optional_positive_int(
+        tokenizer_train_line_limit,
+        name="tokenizer_train_line_limit",
+    )
     resolved_output_dir = Path(output_dir)
     train_text_path = resolved_output_dir / TRAIN_TEXT_ARTIFACT_NAME
     tokenizer_map_path = resolved_output_dir / TOKENIZER_MAP_ARTIFACT_NAME
     if not train_text_path.exists():
         raise FileNotFoundError(f"train.txt was not found: {train_text_path}")
 
-    train_text = _read_train_text_for_tokenizer_map(train_text_path)
-    record_count = _count_nonempty_lines(train_text)
-    if record_count <= 0:
-        raise ValueError(f"Cannot build tokenizer_map.json from an empty train.txt file: {train_text_path}")
-
     effective_vocab_size = profile_vocab_size if vocab_size is None else vocab_size
-    tokenizer_map_text = _render_tokenizer_map_text(
-        train_text,
+    tokenizer_map_text, tokenizer_training_stats = _render_tokenizer_map_text_from_train_path(
+        train_text_path,
         source_name=source_name,
         vocab_size=effective_vocab_size,
         builder_metadata={
@@ -498,13 +512,21 @@ def rebuild_local_refseq_tokenizer_map_from_train_text(
             "vocab_size_requested": effective_vocab_size,
             "rebuilt_from_existing_train_text": True,
         },
+        tokenizer_train_line_limit=tokenizer_train_line_limit,
+        cache_dir=resolved_output_dir,
+        progress_callback=tokenizer_progress_callback,
     )
+    if tokenizer_training_stats.record_count <= 0:
+        raise ValueError(f"Cannot build tokenizer_map.json from an empty train.txt file: {train_text_path}")
+    if tokenizer_training_stats.tokenizer_train_record_count <= 0:
+        raise ValueError(f"Cannot build tokenizer_map.json from an empty tokenizer training sample: {train_text_path}")
     _write_text_if_changed(tokenizer_map_path, tokenizer_map_text)
     return RefseqTokenizerMapBuildSummary(
         output_dir=str(resolved_output_dir),
         train_text_path=str(train_text_path),
         tokenizer_map_path=str(tokenizer_map_path),
-        record_count=record_count,
+        record_count=tokenizer_training_stats.record_count,
+        tokenizer_train_record_count=tokenizer_training_stats.tokenizer_train_record_count,
         vocab_size_requested=effective_vocab_size,
     )
 
@@ -593,6 +615,11 @@ def _normalize_output_artifact_names(
     return normalized
 
 
+def _validate_optional_positive_int(value: int | None, *, name: str) -> None:
+    if value is not None and value <= 0:
+        raise ValueError(f"{name} must be greater than 0 when provided.")
+
+
 def _dedupe_text_file_in_place(path: Path, *, dry_run: bool = False) -> tuple[int, int, bool]:
     temp_path = path.with_name(f"{path.name}.dedupe.tmp")
     temp_path.unlink(missing_ok=True)
@@ -642,34 +669,38 @@ def _render_train_text(records: list[RefseqCompiledRecord]) -> str:
     return "\n".join(record.sequence_train_line for record in records) + "\n"
 
 
-def _read_train_text_for_tokenizer_map(path: Path) -> str:
-    return path.read_text(encoding="utf-8").removeprefix("\ufeff")
-
-
-def _render_tokenizer_map_text(
-    train_text: str,
+def _render_tokenizer_map_text_from_train_path(
+    train_text_path: Path,
     *,
     source_name: str,
     vocab_size: int,
     builder_metadata: dict[str, object],
-) -> str:
-    tokenizer = SequenceTokenizer.from_text(
-        train_text,
-        sequence_type="protein",
+    tokenizer_train_line_limit: int | None,
+    cache_dir: Path,
+    progress_callback: TokenizerProgressCallback | None,
+) -> tuple[str, SequenceTokenizerTextTrainingStats]:
+    tokenizer = SequenceTokenizer.from_sequence_type("protein")
+    training_stats = tokenizer.train_from_text_file(
+        train_text_path,
         vocab_size=vocab_size,
+        line_limit=tokenizer_train_line_limit,
+        cache_dir=cache_dir,
+        progress_callback=progress_callback,
     )
     tokenizer_map_payload = json.loads(
         render_tokenizer_map_payload(
             source_name=source_name,
-            record_count=_count_nonempty_lines(train_text),
+            record_count=training_stats.record_count,
             tokenizer=tokenizer,
         )
     )
     tokenizer_map_payload["builder"] = {
         **builder_metadata,
+        "tokenizer_train_record_count": training_stats.tokenizer_train_record_count,
+        "tokenizer_train_line_limit": tokenizer_train_line_limit,
         "vocab_size_actual": tokenizer.vocab_size,
     }
-    return json.dumps(tokenizer_map_payload, ensure_ascii=False, indent=2) + "\n"
+    return json.dumps(tokenizer_map_payload, ensure_ascii=False, indent=2) + "\n", training_stats
 
 
 def _write_text_if_changed(path: Path, text: str) -> bool:

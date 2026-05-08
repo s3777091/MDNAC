@@ -290,6 +290,39 @@ class RefseqProfileTextTests(unittest.TestCase):
         clean_train_text = "<|protein|>MPEPTIDE<|endoftext|>\n<|protein|>MGLYSEQ<|endoftext|>\n"
         self.assertEqual(clean_train_text, tokenizer.decode(tokenizer.encode(clean_train_text)))
 
+    def test_rebuild_tokenizer_map_can_train_from_line_limited_sample(self) -> None:
+        train_path = self.output_dir / "train.txt"
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        train_path.write_text(
+            "<|protein|>MPEPTIDE<|endoftext|>\n"
+            "<|protein|>MGLYSEQ<|endoftext|>\n"
+            "<|protein|>MWYVTSR<|endoftext|>\n",
+            encoding="utf-8",
+        )
+
+        progress_events: list[dict[str, object]] = []
+        rebuild_summary = rebuild_local_refseq_tokenizer_map_from_train_text(
+            self.output_dir,
+            vocab_size=32,
+            tokenizer_train_line_limit=2,
+            tokenizer_progress_callback=progress_events.append,
+        )
+
+        self.assertEqual(3, rebuild_summary.record_count)
+        self.assertEqual(2, rebuild_summary.tokenizer_train_record_count)
+        tokenizer_map = json.loads(Path(rebuild_summary.tokenizer_map_path).read_text(encoding="utf-8"))
+        self.assertEqual(3, tokenizer_map["record_count"])
+        self.assertEqual(2, tokenizer_map["builder"]["tokenizer_train_record_count"])
+        self.assertEqual(2, tokenizer_map["builder"]["tokenizer_train_line_limit"])
+        tokenizer = SequenceTokenizer.load_map(rebuild_summary.tokenizer_map_path)
+        self.assertEqual("protein", tokenizer.sequence_type)
+        event_names = {str(event["event"]) for event in progress_events}
+        self.assertIn("token_cache_start", event_names)
+        self.assertIn("token_cache_complete", event_names)
+        self.assertIn("bpe_count_start", event_names)
+        self.assertIn("bpe_rewrite_complete", event_names)
+        self.assertIn("bpe_complete", event_names)
+
     def test_skip_instruction_keeps_existing_instruction_file(self) -> None:
         package_one_dir = self.input_root / "package_1"
         package_two_dir = self.input_root / "package_2"
