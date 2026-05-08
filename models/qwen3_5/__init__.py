@@ -1,0 +1,101 @@
+from importlib import import_module
+
+__all__ = [
+    "KVCache",
+    "QWEN3_5_CONFIG_0_8B",
+    "QWEN3_5_CONFIG_2B",
+    "Qwen3_5Model",
+    "Qwen3_5Tokenizer",
+    "IGNORE_INDEX",
+    "build_model",
+    "build_chatbot_qa_examples",
+    "build_chatbot_qa_prompt",
+    "build_instruction_examples",
+    "build_instruction_generation_tokenizer_settings",
+    "build_reasoning_generation_tokenizer_settings",
+    "calc_loss_batch",
+    "calc_loss_loader",
+    "compute_supervised_batch_loss",
+    "default_instruction_checkpoint_metadata",
+    "default_reasoning_checkpoint_metadata",
+    "download_from_huggingface",
+    "evaluate_model",
+    "export_checkpoint_to_hf_directory",
+    "filter_examples_by_max_len",
+    "format_instruction_response",
+    "format_reasoning_answer",
+    "generate_and_print_sample",
+    "generate_text_simple",
+    "generate_text_simple_stream",
+    "DEFAULT_OLLAMA_STOP_TOKENS",
+    "DEFAULT_OLLAMA_TEMPLATE",
+    "iter_example_batches",
+    "build_supervised_examples",
+    "build_default_ollama_system_prompt",
+    "build_hf_text_config",
+    "convert_repo_state_dict_to_hf",
+    "ExportedQwen3_5HfArtifact",
+    "load_export_tokenizer",
+    "prepare_batch_tensors",
+    "resolve_checkpoint_tokenizer",
+    "strip_think_tags",
+    "text_to_token_ids",
+    "token_ids_to_text",
+    "train_model_simple",
+]
+
+_SYMBOL_TO_MODULE = {
+    "KVCache": "ch05",
+    "QWEN3_5_CONFIG_0_8B": "ch05",
+    "QWEN3_5_CONFIG_2B": "ch05",
+    "Qwen3_5Model": "ch05",
+    "Qwen3_5Tokenizer": "ch05",
+    "IGNORE_INDEX": "reasoning",
+    "build_model": "ch05",
+    "build_chatbot_qa_examples": "ch07",
+    "build_chatbot_qa_prompt": "ch07",
+    "build_instruction_examples": "ch07",
+    "build_instruction_generation_tokenizer_settings": "ch07",
+    "build_reasoning_generation_tokenizer_settings": "reasoning",
+    "calc_loss_batch": "ch05",
+    "calc_loss_loader": "ch05",
+    "compute_supervised_batch_loss": "reasoning",
+    "default_instruction_checkpoint_metadata": "ch07",
+    "default_reasoning_checkpoint_metadata": "reasoning",
+    "download_from_huggingface": "ch05",
+    "evaluate_model": "ch05",
+    "export_checkpoint_to_hf_directory": "export",
+    "filter_examples_by_max_len": "reasoning",
+    "format_instruction_response": "ch07",
+    "format_reasoning_answer": "reasoning",
+    "generate_and_print_sample": "ch05",
+    "generate_text_simple": "ch05",
+    "generate_text_simple_stream": "ch05",
+    "DEFAULT_OLLAMA_STOP_TOKENS": "export",
+    "DEFAULT_OLLAMA_TEMPLATE": "export",
+    "iter_example_batches": "reasoning",
+    "build_supervised_examples": "reasoning",
+    "build_default_ollama_system_prompt": "export",
+    "build_hf_text_config": "export",
+    "convert_repo_state_dict_to_hf": "export",
+    "ExportedQwen3_5HfArtifact": "export",
+    "load_export_tokenizer": "export",
+    "prepare_batch_tensors": "reasoning",
+    "resolve_checkpoint_tokenizer": "export",
+    "strip_think_tags": "reasoning",
+    "text_to_token_ids": "ch05",
+    "token_ids_to_text": "ch05",
+    "train_model_simple": "ch05",
+}
+
+
+def __getattr__(name: str):
+    if name not in __all__:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    module = import_module(f".{_SYMBOL_TO_MODULE[name]}", __name__)
+    return getattr(module, name)
+
+
+def __dir__() -> list[str]:
+    return sorted(__all__)

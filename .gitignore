@@ -16,4 +16,13 @@ libs/data/models/trash/*
 !libs/data/models/README.md
 
 LLMs-from-scratch/
-models/
+
+# Keep the root models package tracked; libs.core imports models.qwen3_5.
+models/**/*.safetensors
+models/**/*.bin
+models/**/*.pt
+models/**/*.pth
+models/**/*.onnx
+models/**/*.gguf
+models/**/checkpoints/
+models/**/artifacts/
