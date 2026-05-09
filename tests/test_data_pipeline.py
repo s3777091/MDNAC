@@ -348,6 +348,49 @@ class SequenceTokenizerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tokenizer.encode("<|protein|>MPEPTZDE<|endoftext|>")
 
+    def test_text_file_tokenizer_resume_continues_from_checkpoint(self):
+        root = Path("tests/artifacts/tokenizer-resume")
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True, exist_ok=True)
+        train_path = root / "train.txt"
+        train_text = (
+            "<|protein|>MPEPTIDEMPEPTIDE<|endoftext|>\n"
+            "<|protein|>GLYSERQGLYSERQ<|endoftext|>\n"
+            "<|protein|>MPEPTXDEMPEPTXDE<|endoftext|>\n"
+        )
+        train_path.write_text(train_text, encoding="utf-8")
+
+        def stop_after_first_merge(event):
+            if event.get("event") == "tokenizer_checkpoint_saved" and int(event.get("completed_merges", 0)) >= 1:
+                raise RuntimeError("stop after checkpoint")
+
+        interrupted = SequenceTokenizer.from_sequence_type("protein")
+        with self.assertRaisesRegex(RuntimeError, "stop after checkpoint"):
+            interrupted.train_from_text_file(
+                train_path,
+                vocab_size=36,
+                cache_dir=root,
+                resume=True,
+                progress_callback=stop_after_first_merge,
+            )
+
+        self.assertTrue(list(root.glob("sequence-tokenizer-resume-*.state.json")))
+        resumed_events: list[dict[str, object]] = []
+        resumed = SequenceTokenizer.from_sequence_type("protein")
+        stats = resumed.train_from_text_file(
+            train_path,
+            vocab_size=36,
+            cache_dir=root,
+            resume=True,
+            progress_callback=resumed_events.append,
+        )
+
+        self.assertEqual(3, stats.record_count)
+        self.assertEqual(train_text, resumed.decode(resumed.encode(train_text)))
+        self.assertTrue(any(event.get("event") == "tokenizer_resume_loaded" for event in resumed_events))
+        self.assertFalse(list(root.glob("sequence-tokenizer-resume-*")))
+        shutil.rmtree(root, ignore_errors=True)
+
 
 class TrainingHubLifecycleTests(unittest.TestCase):
     def setUp(self):

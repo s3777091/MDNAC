@@ -57,6 +57,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable tokenizer build progress logs.",
     )
     parser.add_argument(
+        "--no-tokenizer-resume",
+        action="store_true",
+        help=(
+            "Disable resumable tokenizer cache checkpoints. By default tokenizer builds can resume from "
+            "the last completed BPE merge after rerunning the same command."
+        ),
+    )
+    parser.add_argument(
         "--profile-vocab-size",
         type=int,
         default=None,
@@ -137,6 +145,7 @@ def main() -> int:
             args.output_dir,
             vocab_size=effective_vocab_size,
             tokenizer_train_line_limit=args.tokenizer_train_line_limit,
+            tokenizer_resume=not args.no_tokenizer_resume,
             tokenizer_progress_callback=tokenizer_progress_callback,
         )
         print("[mode] rebuild-tokenizer-map-from-train")
@@ -160,6 +169,7 @@ def main() -> int:
         workers=args.workers,
         skip_artifacts=args.skip,
         tokenizer_train_line_limit=args.tokenizer_train_line_limit,
+        tokenizer_resume=not args.no_tokenizer_resume,
         tokenizer_progress_callback=tokenizer_progress_callback,
     )
     print(f"[input] {summary.input_root}")
@@ -184,7 +194,29 @@ def main() -> int:
 def _build_tokenizer_progress_reporter():
     def report(event: dict[str, object]) -> None:
         event_name = str(event.get("event", ""))
-        if event_name == "token_cache_start":
+        if event_name == "tokenizer_resume_loaded":
+            print(
+                f"[tokenizer] resume loaded merges={event.get('completed_merges')} "
+                f"vocab={event.get('vocab_size')}/{event.get('target_vocab_size')} "
+                f"cache={_format_bytes(event.get('cache_bytes'))}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event_name == "tokenizer_resume_ignored":
+            print(
+                f"[tokenizer] resume ignored reason={event.get('reason')}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event_name == "tokenizer_checkpoint_saved":
+            print(
+                f"[tokenizer] checkpoint merges={event.get('completed_merges')} "
+                f"vocab={event.get('vocab_size')}/{event.get('target_vocab_size')} "
+                f"cache={_format_bytes(event.get('cache_bytes'))}",
+                file=sys.stderr,
+                flush=True,
+            )
+        elif event_name == "token_cache_start":
             print(
                 f"[tokenizer] cache start total={_format_bytes(event.get('total_bytes'))} "
                 f"line_limit={event.get('line_limit')}",

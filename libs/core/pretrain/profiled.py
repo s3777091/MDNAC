@@ -536,6 +536,100 @@ def build_profile_text_from_sequence_metadata(
     return "; ".join(parts)
 
 
+def load_mdc_profile_sequence_records_from_instruction_jsonl(
+    instruction_jsonl_path: Path | str,
+    *,
+    default_sequence_type: str = "protein",
+    instruction_field: str = "instruction",
+    input_field: str = "input",
+    output_field: str = "output",
+) -> tuple[MDCProfileSequenceRecord, ...]:
+    resolved_path = Path(instruction_jsonl_path)
+    if not resolved_path.exists():
+        raise FileNotFoundError(f"instruction.jsonl was not found: {resolved_path}")
+
+    records: list[MDCProfileSequenceRecord] = []
+    with resolved_path.open("r", encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            if not raw_line.strip():
+                continue
+
+            try:
+                payload = json.loads(raw_line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON in instruction.jsonl line {line_number}.") from exc
+
+            if not isinstance(payload, Mapping):
+                raise ValueError(f"instruction.jsonl line {line_number} must contain a JSON object.")
+
+            instruction = _sanitize_profile_component(str(payload.get(instruction_field) or ""))
+            input_text = _sanitize_profile_component(str(payload.get(input_field) or ""))
+            sequence = _compact_sequence_text(str(payload.get(output_field) or ""))
+            if not instruction:
+                raise ValueError(f"instruction.jsonl line {line_number} is missing '{instruction_field}'.")
+            if not sequence:
+                raise ValueError(f"instruction.jsonl line {line_number} is missing '{output_field}'.")
+
+            metadata_payload = payload.get("metadata")
+            metadata: dict[str, object] = (
+                {str(key): value for key, value in metadata_payload.items()}
+                if isinstance(metadata_payload, Mapping)
+                else {}
+            )
+            for key, value in payload.items():
+                if key in {instruction_field, input_field, output_field, "metadata"}:
+                    continue
+                metadata.setdefault(str(key), value)
+
+            sequence_type = _normalize_sequence_type(
+                str(
+                    payload.get("sequence_type")
+                    or metadata.get("sequence_type")
+                    or default_sequence_type
+                )
+            )
+            profile = instruction if not input_text else f"{instruction}; input {input_text}"
+            records.append(
+                MDCProfileSequenceRecord(
+                    profile=profile,
+                    sequence=sequence,
+                    sequence_type=sequence_type,
+                    metadata=metadata,
+                )
+            )
+
+    if not records:
+        raise ValueError(f"instruction.jsonl does not contain any non-empty records: {resolved_path}")
+    return tuple(records)
+
+
+def save_mdc_profile_sequence_pretrain_from_instruction_jsonl(
+    instruction_jsonl_path: Path | str,
+    output_dir: Path | str,
+    *,
+    default_sequence_type: str = "protein",
+    kmer_size: int = 3,
+    profile_vocab_size: int = 256,
+) -> MDCProfileSequenceTextArtifact:
+    records = load_mdc_profile_sequence_records_from_instruction_jsonl(
+        instruction_jsonl_path,
+        default_sequence_type=default_sequence_type,
+    )
+    sequence_types = {record.sequence_type for record in records}
+    if len(sequence_types) != 1:
+        raise ValueError(
+            "The current MDC profile-aware text format requires a single sequence_type across instruction records."
+        )
+
+    return save_mdc_profile_sequence_pretrain_artifacts(
+        records,
+        output_dir,
+        sequence_type=next(iter(sequence_types)),
+        kmer_size=kmer_size,
+        profile_vocab_size=profile_vocab_size,
+    )
+
+
 def load_mdc_profile_sequence_records_from_session_artifact(
     artifact: PreparationSessionArtifact,
     *,
@@ -964,3 +1058,7 @@ def _sanitize_profile_component(value: str) -> str:
     for token in RESERVED_TRAIN_TOKENS:
         cleaned = cleaned.replace(token, " ")
     return " ".join(cleaned.split())
+
+
+def _compact_sequence_text(value: str) -> str:
+    return "".join(str(value).split()).upper()

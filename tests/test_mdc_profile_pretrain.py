@@ -18,6 +18,7 @@ from libs.core import (
     load_mdc_profile_sequence_records_from_session_artifact,
     create_mdc_profile_sequence_pretrain_dataloader,
     run_mdc_causal_lm_batch_epoch,
+    save_mdc_profile_sequence_pretrain_from_instruction_jsonl,
     save_mdc_profile_sequence_pretrain_from_preparation_sessions,
     save_mdc_profile_sequence_pretrain_artifacts,
 )
@@ -239,6 +240,49 @@ class MDCProfileSequencePretrainTests(unittest.TestCase):
         self.assertEqual("protein", compiled.sequence_type)
         self.assertTrue(Path(artifact.train_text_path).exists())
         self.assertIn("<|profile|>", Path(artifact.train_text_path).read_text(encoding="utf-8"))
+
+    def test_saves_profile_aware_pretrain_artifacts_from_instruction_jsonl(self) -> None:
+        instruction_path = self.root / "instruction.jsonl"
+        instruction_path.write_text(
+            "\n".join(
+                json.dumps(payload, ensure_ascii=False)
+                for payload in (
+                    {
+                        "instruction": "labels nitrogen fixation; product nitrogenase helper",
+                        "input": "",
+                        "output": "MVLSPADKTN",
+                        "accession": "NP_000001.1",
+                        "metadata": {"dataset_group": "bacteria"},
+                    },
+                    {
+                        "instruction": "labels plastic degradation",
+                        "input": "organism Pseudomonas putida",
+                        "output": "gkahageygm",
+                        "accession": "NP_000002.1",
+                    },
+                )
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        output_dir = self.root / "compiled-from-instruction"
+        artifact = save_mdc_profile_sequence_pretrain_from_instruction_jsonl(
+            instruction_path,
+            output_dir,
+            kmer_size=3,
+            profile_vocab_size=64,
+        )
+
+        compiled = MDCProfileSequencePretrainArtifacts.from_directory(output_dir)
+        train_text = Path(artifact.train_text_path).read_text(encoding="utf-8")
+
+        self.assertEqual(2, artifact.record_count)
+        self.assertEqual(2, compiled.record_count)
+        self.assertIn("<|profile|>labels nitrogen fixation, product nitrogenase helper<|sep|>", train_text)
+        self.assertIn("labels plastic degradation; input organism Pseudomonas putida", train_text)
+        self.assertIn("<|protein|>GKAHAGEYGM<|endoftext|>", train_text)
+        self.assertEqual("MVLSPADKTN", compiled.examples[0].sequence)
 
 if __name__ == "__main__":
     unittest.main()

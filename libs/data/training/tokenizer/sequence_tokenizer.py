@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 from array import array
@@ -79,29 +80,9 @@ class SequenceTokenizer:
     @classmethod
     def load_map(cls, path: Path | str) -> "SequenceTokenizer":
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
-        tokenizer_payload = payload.get("tokenizer", payload)
-        str_to_int = {str(token): int(token_id) for token, token_id in tokenizer_payload["str_to_int"].items()}
-        int_to_str = {int(token_id): str(token) for token_id, token in tokenizer_payload["int_to_str"].items()}
-        special_tokens = tuple(tokenizer_payload.get("special_tokens", DEFAULT_SPECIAL_TOKENS))
-        sequence_type = _normalize_sequence_type(str(tokenizer_payload.get("sequence_type", "protein")))
-
-        merges_payload = tokenizer_payload.get("bpe_merges", [])
-        bpe_merges: dict[tuple[int, int], int] = {}
-        merge_ranks: dict[tuple[int, int], int] = {}
-        for rank, merge in enumerate(merges_payload):
-            pair = tuple(int(item) for item in merge["pair"])
-            new_id = int(merge["new_id"])
-            bpe_merges[pair] = new_id
-            merge_ranks[pair] = rank
-
-        return cls(
-            sequence_type=sequence_type,
-            str_to_int=str_to_int,
-            int_to_str=int_to_str,
-            special_tokens=special_tokens,
-            bpe_merges=bpe_merges,
-            merge_ranks=merge_ranks,
-        )
+        tokenizer = cls()
+        tokenizer._load_from_payload(payload)
+        return tokenizer
 
     @property
     def vocab_size(self) -> int:
@@ -152,6 +133,7 @@ class SequenceTokenizer:
         cache_dir: Path | str | None = None,
         progress_callback: TokenizerProgressCallback | None = None,
         progress_interval_bytes: int = TOKENIZER_PROGRESS_INTERVAL_BYTES,
+        resume: bool = False,
     ) -> SequenceTokenizerTextTrainingStats:
         if line_limit is not None and line_limit <= 0:
             raise ValueError("line_limit must be greater than 0 when provided.")
@@ -159,32 +141,99 @@ class SequenceTokenizer:
         source_path = Path(path)
         allowed_tokens = set(self.special_tokens) if allowed_special is None else set(allowed_special)
         self._initialize_base_vocab(self.sequence_type)
+        base_vocab_size = len(self.str_to_int)
 
-        target_vocab_size = max(vocab_size, len(self.str_to_int))
+        target_vocab_size = max(vocab_size, base_vocab_size)
         id_typecode = _array_typecode_for_vocab_size(target_vocab_size)
         temp_parent = Path(cache_dir) if cache_dir is not None else None
+        state_path: Path | None = None
+        success = False
 
-        cache_descriptor, cache_name = tempfile.mkstemp(
-            prefix="sequence-tokenizer-",
-            suffix=".bin",
-            dir=temp_parent,
-        )
-        os.close(cache_descriptor)
-        cache_path = Path(cache_name)
-        rewritten_cache_path = cache_path.with_name(f"{cache_path.name}.rewrite")
-        try:
-            stats = self._write_token_cache_from_text_file(
-                source_path,
-                cache_path,
-                id_typecode=id_typecode,
-                allowed_special=allowed_tokens,
+        if resume:
+            resume_parent = temp_parent or source_path.parent
+            resume_parent.mkdir(parents=True, exist_ok=True)
+            state_path, cache_path, rewritten_cache_path = _tokenizer_resume_paths(
+                source_path=source_path,
+                cache_dir=resume_parent,
+                sequence_type=self.sequence_type,
+                vocab_size=vocab_size,
                 line_limit=line_limit,
-                progress_callback=progress_callback,
-                progress_interval_bytes=progress_interval_bytes,
+                allowed_special=allowed_tokens,
             )
+        else:
+            cache_descriptor, cache_name = tempfile.mkstemp(
+                prefix="sequence-tokenizer-",
+                suffix=".bin",
+                dir=temp_parent,
+            )
+            os.close(cache_descriptor)
+            cache_path = Path(cache_name)
+            rewritten_cache_path = cache_path.with_name(f"{cache_path.name}.rewrite")
 
-            base_vocab_size = len(self.str_to_int)
-            next_token_id = base_vocab_size
+        try:
+            resume_state = (
+                _load_tokenizer_resume_state(
+                    state_path,
+                    source_path=source_path,
+                    sequence_type=self.sequence_type,
+                    vocab_size=vocab_size,
+                    target_vocab_size=target_vocab_size,
+                    line_limit=line_limit,
+                    allowed_special=allowed_tokens,
+                    id_typecode=id_typecode,
+                    progress_callback=progress_callback,
+                )
+                if state_path is not None
+                else None
+            )
+            if resume_state is not None:
+                self._load_from_payload(resume_state["tokenizer"])
+                stats = _stats_from_resume_payload(resume_state["stats"])
+                restored_cache_path = Path(str(resume_state["cache_path"]))
+                if restored_cache_path == rewritten_cache_path:
+                    rewritten_cache_path = cache_path
+                cache_path = restored_cache_path
+                _emit_progress(
+                    progress_callback,
+                    {
+                        "event": "tokenizer_resume_loaded",
+                        "path": str(state_path),
+                        "cache_path": str(cache_path),
+                        "cache_bytes": cache_path.stat().st_size if cache_path.exists() else 0,
+                        "completed_merges": len(self.merge_ranks),
+                        "vocab_size": self.vocab_size,
+                        "target_vocab_size": target_vocab_size,
+                    },
+                )
+            else:
+                cache_path.unlink(missing_ok=True)
+                rewritten_cache_path.unlink(missing_ok=True)
+                stats = self._write_token_cache_from_text_file(
+                    source_path,
+                    cache_path,
+                    id_typecode=id_typecode,
+                    allowed_special=allowed_tokens,
+                    line_limit=line_limit,
+                    progress_callback=progress_callback,
+                    progress_interval_bytes=progress_interval_bytes,
+                )
+                if state_path is not None:
+                    _write_tokenizer_resume_state(
+                        state_path,
+                        source_path=source_path,
+                        cache_path=cache_path,
+                        sequence_type=self.sequence_type,
+                        vocab_size=vocab_size,
+                        target_vocab_size=target_vocab_size,
+                        line_limit=line_limit,
+                        allowed_special=allowed_tokens,
+                        id_typecode=id_typecode,
+                        stats=stats,
+                        tokenizer=self,
+                        progress_callback=progress_callback,
+                    )
+
+            next_token_id = max(self.int_to_str, default=-1) + 1
             merge_total = max(target_vocab_size - base_vocab_size, 0)
             completed_reason = "target_reached"
 
@@ -249,6 +298,21 @@ class SequenceTokenizer:
                 old_cache_path.unlink()
                 cache_path = rewritten_cache_path
                 rewritten_cache_path = old_cache_path
+                if state_path is not None:
+                    _write_tokenizer_resume_state(
+                        state_path,
+                        source_path=source_path,
+                        cache_path=cache_path,
+                        sequence_type=self.sequence_type,
+                        vocab_size=vocab_size,
+                        target_vocab_size=target_vocab_size,
+                        line_limit=line_limit,
+                        allowed_special=allowed_tokens,
+                        id_typecode=id_typecode,
+                        stats=stats,
+                        tokenizer=self,
+                        progress_callback=progress_callback,
+                    )
 
             _emit_progress(
                 progress_callback,
@@ -260,10 +324,17 @@ class SequenceTokenizer:
                     "merge_count": len(self.merge_ranks),
                 },
             )
+            success = True
             return stats
         finally:
-            cache_path.unlink(missing_ok=True)
             rewritten_cache_path.unlink(missing_ok=True)
+            if state_path is None:
+                cache_path.unlink(missing_ok=True)
+            elif success:
+                cache_path.unlink(missing_ok=True)
+                state_path.unlink(missing_ok=True)
+            elif not state_path.exists():
+                cache_path.unlink(missing_ok=True)
 
     def _write_token_cache_from_text_file(
         self,
@@ -580,6 +651,32 @@ class SequenceTokenizer:
         self.bpe_merges = {}
         self.merge_ranks = {}
 
+    def _load_from_payload(self, payload: dict[str, object]) -> None:
+        tokenizer_payload = payload.get("tokenizer", payload)
+        if not isinstance(tokenizer_payload, dict):
+            raise ValueError("Tokenizer payload must contain a tokenizer object.")
+
+        self.str_to_int = {
+            str(token): int(token_id)
+            for token, token_id in tokenizer_payload["str_to_int"].items()
+        }
+        self.int_to_str = {
+            int(token_id): str(token)
+            for token_id, token in tokenizer_payload["int_to_str"].items()
+        }
+        self.special_tokens = tuple(tokenizer_payload.get("special_tokens", DEFAULT_SPECIAL_TOKENS))
+        self.sequence_type = _normalize_sequence_type(str(tokenizer_payload.get("sequence_type", "protein")))
+
+        self.bpe_merges = {}
+        self.merge_ranks = {}
+        for rank, merge in enumerate(tokenizer_payload.get("bpe_merges", [])):
+            pair = tuple(int(item) for item in merge["pair"])
+            if len(pair) != 2:
+                raise ValueError("BPE merge pairs must contain two token IDs.")
+            new_id = int(merge["new_id"])
+            self.bpe_merges[pair] = new_id
+            self.merge_ranks[pair] = rank
+
     def _pretokenize_text(self, text: str, allowed_special: set[str]) -> list[str]:
         return pretokenize_text(text, special_tokens=self.special_tokens, allowed_special=allowed_special)
 
@@ -605,6 +702,175 @@ def _normalize_sequence_type(sequence_type: str) -> str:
     if normalized != "protein":
         raise ValueError("SequenceTokenizer only supports protein sequences.")
     return normalized
+
+
+def _tokenizer_resume_paths(
+    *,
+    source_path: Path,
+    cache_dir: Path,
+    sequence_type: str,
+    vocab_size: int,
+    line_limit: int | None,
+    allowed_special: set[str],
+) -> tuple[Path, Path, Path]:
+    fingerprint_payload = {
+        "source_path": str(source_path.resolve()),
+        "sequence_type": sequence_type,
+        "vocab_size": vocab_size,
+        "line_limit": line_limit,
+        "allowed_special": sorted(allowed_special),
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+    base_path = cache_dir / f"sequence-tokenizer-resume-{fingerprint}"
+    return (
+        base_path.with_suffix(".state.json"),
+        base_path.with_suffix(".cache.bin"),
+        base_path.with_suffix(".rewrite.bin"),
+    )
+
+
+def _source_signature(source_path: Path) -> dict[str, object]:
+    stat = source_path.stat()
+    return {
+        "path": str(source_path.resolve()),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _stats_to_resume_payload(stats: SequenceTokenizerTextTrainingStats) -> dict[str, int]:
+    return {
+        "record_count": stats.record_count,
+        "tokenizer_train_record_count": stats.tokenizer_train_record_count,
+        "token_sequence_count": stats.token_sequence_count,
+        "token_count": stats.token_count,
+    }
+
+
+def _stats_from_resume_payload(payload: object) -> SequenceTokenizerTextTrainingStats:
+    if not isinstance(payload, dict):
+        raise ValueError("Tokenizer resume state is missing training stats.")
+    return SequenceTokenizerTextTrainingStats(
+        record_count=int(payload["record_count"]),
+        tokenizer_train_record_count=int(payload["tokenizer_train_record_count"]),
+        token_sequence_count=int(payload["token_sequence_count"]),
+        token_count=int(payload["token_count"]),
+    )
+
+
+def _load_tokenizer_resume_state(
+    state_path: Path | None,
+    *,
+    source_path: Path,
+    sequence_type: str,
+    vocab_size: int,
+    target_vocab_size: int,
+    line_limit: int | None,
+    allowed_special: set[str],
+    id_typecode: str,
+    progress_callback: TokenizerProgressCallback | None,
+) -> dict[str, object] | None:
+    if state_path is None or not state_path.exists():
+        return None
+
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        state_path.unlink(missing_ok=True)
+        return None
+
+    expected = {
+        "version": 1,
+        "source": _source_signature(source_path),
+        "sequence_type": sequence_type,
+        "vocab_size": vocab_size,
+        "target_vocab_size": target_vocab_size,
+        "line_limit": line_limit,
+        "allowed_special": sorted(allowed_special),
+        "id_typecode": id_typecode,
+    }
+    ignored_reason = ""
+    for key, expected_value in expected.items():
+        if payload.get(key) != expected_value:
+            ignored_reason = f"{key}_mismatch"
+            break
+
+    raw_cache_path = payload.get("cache_path")
+    cache_path = Path(raw_cache_path) if isinstance(raw_cache_path, str) and raw_cache_path else None
+    if not ignored_reason and cache_path is None:
+        ignored_reason = "cache_path_missing"
+    if not ignored_reason and cache_path is not None and not cache_path.exists():
+        ignored_reason = "cache_missing"
+
+    if ignored_reason:
+        _emit_progress(
+            progress_callback,
+            {
+                "event": "tokenizer_resume_ignored",
+                "path": str(state_path),
+                "reason": ignored_reason,
+            },
+        )
+        state_path.unlink(missing_ok=True)
+        if cache_path is not None:
+            cache_path.unlink(missing_ok=True)
+        return None
+
+    payload["cache_path"] = str(cache_path)
+    return payload
+
+
+def _write_tokenizer_resume_state(
+    state_path: Path,
+    *,
+    source_path: Path,
+    cache_path: Path,
+    sequence_type: str,
+    vocab_size: int,
+    target_vocab_size: int,
+    line_limit: int | None,
+    allowed_special: set[str],
+    id_typecode: str,
+    stats: SequenceTokenizerTextTrainingStats,
+    tokenizer: SequenceTokenizer,
+    progress_callback: TokenizerProgressCallback | None,
+) -> None:
+    payload = {
+        "version": 1,
+        "source": _source_signature(source_path),
+        "sequence_type": sequence_type,
+        "vocab_size": vocab_size,
+        "target_vocab_size": target_vocab_size,
+        "line_limit": line_limit,
+        "allowed_special": sorted(allowed_special),
+        "id_typecode": id_typecode,
+        "cache_path": str(cache_path),
+        "cache_bytes": cache_path.stat().st_size if cache_path.exists() else 0,
+        "stats": _stats_to_resume_payload(stats),
+        "tokenizer": json.loads(tokenizer.to_json()),
+        "completed_merges": len(tokenizer.merge_ranks),
+    }
+    temp_path = state_path.with_suffix(f"{state_path.suffix}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        temp_path.replace(state_path)
+    except PermissionError:
+        state_path.unlink(missing_ok=True)
+        temp_path.replace(state_path)
+    _emit_progress(
+        progress_callback,
+        {
+            "event": "tokenizer_checkpoint_saved",
+            "path": str(state_path),
+            "cache_path": str(cache_path),
+            "cache_bytes": payload["cache_bytes"],
+            "completed_merges": len(tokenizer.merge_ranks),
+            "vocab_size": tokenizer.vocab_size,
+            "target_vocab_size": target_vocab_size,
+        },
+    )
 
 
 def _array_typecode_for_vocab_size(vocab_size: int) -> str:

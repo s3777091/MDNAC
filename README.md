@@ -52,6 +52,8 @@ uv run python cmd/build_refseq_profile_text.py --rebuild-tokenizer-map-from-trai
 
 `--rebuild-tokenizer-map-from-train` is the explicit mode for rebuilding only `tokenizer_map.json` from the existing `train.txt` inside `--output-dir`, without rescanning the RefSeq archives.
 
+Tokenizer builds are resumable by default. During `tokenizer_map.json` creation, the command writes a `sequence-tokenizer-resume-*.state.json` checkpoint and a matching cache file into `--output-dir` after the initial cache pass and after each completed BPE merge. If the process or VM stops before completion, rerun the same command with the same `train.txt`, `--vocab-size`, and `--tokenizer-train-line-limit`; it resumes from the last completed merge. Use `--no-tokenizer-resume` to force the old scratch-build behavior.
+
 The compiler is append-only. Re-running against the same output directory appends the current batch into `train.txt` and `instruction.jsonl`, then rebuilds `tokenizer_map.json` from the on-disk `train.txt`. It does not use `summary.json` or `history.json`.
 
 ## Protein Pretraining
@@ -64,6 +66,18 @@ Stage 2 notebooks now use the protein-only flow:
 - `notebooks/stage_2_foundation_model/06_model_evaluation/07_plot_metrics.ipynb`
 
 The notebooks call `libs.core` helpers to build or load the protein `SequenceTokenizer`, create causal-LM batches from `train.txt`, instantiate Qwen3.5-style backbone configs for the MDC decoder, save/load resumable `qwen3_5_protein_lm` checkpoints, and benchmark protein next-token accuracy.
+
+To pretrain on the same metadata-to-protein shape used by `instruction.jsonl`, build profile-aware pretrain artifacts from the JSONL file:
+
+```powershell
+cmd\build_profile_pretrain_from_instruction_jsonl.cmd data\compiled\refseq_bacteria_protein\instruction.jsonl -o data\compiled\refseq_bacteria_profile_pretrain
+```
+
+```bash
+bash cmd/build_profile_pretrain_from_instruction_jsonl.sh data/compiled/refseq_bacteria_protein/instruction.jsonl -o data/compiled/refseq_bacteria_profile_pretrain
+```
+
+This writes a profile-aware `train.txt` where each line keeps `instruction` and optional `input` as the conditioning profile, followed by the protein `output` target. The generated `tokenizer_map.json` uses the existing MDC fused profile/sequence layout, so it loads through `MDCProfileSequencePretrainArtifacts` and `create_mdc_profile_sequence_pretrain_dataloader`.
 
 If you need to collapse duplicates introduced by repeated append-only runs, use the dedupe command:
 
