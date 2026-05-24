@@ -391,6 +391,43 @@ class SequenceTokenizerTests(unittest.TestCase):
         self.assertFalse(list(root.glob("sequence-tokenizer-resume-*")))
         shutil.rmtree(root, ignore_errors=True)
 
+    def test_text_file_tokenizer_parallel_workers_match_serial(self):
+        root = Path("tests/artifacts/tokenizer-parallel")
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir(parents=True, exist_ok=True)
+        train_path = root / "train.txt"
+        train_text = "".join(
+            f"<|protein|>{'MPEPTIDEGLYSERQ' if index % 2 else 'GLYSERQMPEPTIDE'}<|endoftext|>\n"
+            for index in range(30)
+        )
+        train_path.write_text(train_text, encoding="utf-8")
+
+        serial = SequenceTokenizer.from_sequence_type("protein")
+        serial_stats = serial.train_from_text_file(
+            train_path,
+            vocab_size=40,
+            cache_dir=root,
+            worker_count=1,
+        )
+
+        parallel_events: list[dict[str, object]] = []
+        parallel = SequenceTokenizer.from_sequence_type("protein")
+        parallel_stats = parallel.train_from_text_file(
+            train_path,
+            vocab_size=40,
+            cache_dir=root,
+            worker_count=2,
+            progress_callback=parallel_events.append,
+        )
+
+        self.assertEqual(serial_stats, parallel_stats)
+        self.assertEqual(json.loads(serial.to_json()), json.loads(parallel.to_json()))
+        self.assertTrue(
+            any(event.get("workers") == 2 for event in parallel_events)
+            or any(event.get("event") == "tokenizer_parallel_disabled" for event in parallel_events)
+        )
+        shutil.rmtree(root, ignore_errors=True)
+
 
 class TrainingHubLifecycleTests(unittest.TestCase):
     def setUp(self):

@@ -54,6 +54,8 @@ uv run python cmd/build_refseq_profile_text.py --rebuild-tokenizer-map-from-trai
 
 Tokenizer builds are resumable by default. During `tokenizer_map.json` creation, the command writes a `sequence-tokenizer-resume-*.state.json` checkpoint and a matching cache file into `--output-dir` after the initial cache pass and after each completed BPE merge. If the process or VM stops before completion, rerun the same command with the same `train.txt`, `--vocab-size`, and `--tokenizer-train-line-limit`; it resumes from the last completed merge. Use `--no-tokenizer-resume` to force the old scratch-build behavior.
 
+For large tokenizer rebuilds, add `--tokenizer-workers 0` to use all detected CPU cores for BPE cache counting and rewrite work, or pass a fixed worker count such as `--tokenizer-workers 8`.
+
 The compiler is append-only. Re-running against the same output directory appends the current batch into `train.txt` and `instruction.jsonl`, then rebuilds `tokenizer_map.json` from the on-disk `train.txt`. It does not use `summary.json` or `history.json`.
 
 ## Protein Pretraining

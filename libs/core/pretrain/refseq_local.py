@@ -274,6 +274,7 @@ def build_local_refseq_profile_text_artifacts(
     skip_artifacts: str | tuple[str, ...] | list[str] | set[str] | None = None,
     tokenizer_train_line_limit: int | None = None,
     tokenizer_resume: bool = False,
+    tokenizer_workers: int = 1,
     tokenizer_progress_callback: TokenizerProgressCallback | None = None,
 ) -> RefseqLocalBuildSummary:
     del kmer_size, profile_sample_char_limit
@@ -440,6 +441,7 @@ def build_local_refseq_profile_text_artifacts(
             builder_metadata=builder_metadata,
             tokenizer_train_line_limit=tokenizer_train_line_limit,
             tokenizer_resume=tokenizer_resume,
+            tokenizer_workers=tokenizer_workers,
             cache_dir=resolved_output_dir,
             progress_callback=tokenizer_progress_callback,
         )
@@ -491,6 +493,7 @@ def rebuild_local_refseq_tokenizer_map_from_train_text(
     profile_vocab_size: int = 256,
     tokenizer_train_line_limit: int | None = None,
     tokenizer_resume: bool = False,
+    tokenizer_workers: int = 1,
     tokenizer_progress_callback: TokenizerProgressCallback | None = None,
 ) -> RefseqTokenizerMapBuildSummary:
     _validate_optional_positive_int(
@@ -517,6 +520,7 @@ def rebuild_local_refseq_tokenizer_map_from_train_text(
         },
         tokenizer_train_line_limit=tokenizer_train_line_limit,
         tokenizer_resume=tokenizer_resume,
+        tokenizer_workers=tokenizer_workers,
         cache_dir=resolved_output_dir,
         progress_callback=tokenizer_progress_callback,
     )
@@ -681,6 +685,7 @@ def _render_tokenizer_map_text_from_train_path(
     builder_metadata: dict[str, object],
     tokenizer_train_line_limit: int | None,
     tokenizer_resume: bool,
+    tokenizer_workers: int,
     cache_dir: Path,
     progress_callback: TokenizerProgressCallback | None,
 ) -> tuple[str, SequenceTokenizerTextTrainingStats]:
@@ -692,6 +697,7 @@ def _render_tokenizer_map_text_from_train_path(
         cache_dir=cache_dir,
         progress_callback=progress_callback,
         resume=tokenizer_resume,
+        worker_count=tokenizer_workers,
     )
     tokenizer_map_payload = json.loads(
         render_tokenizer_map_payload(
@@ -705,6 +711,7 @@ def _render_tokenizer_map_text_from_train_path(
         "tokenizer_train_record_count": training_stats.tokenizer_train_record_count,
         "tokenizer_train_line_limit": tokenizer_train_line_limit,
         "tokenizer_resume": tokenizer_resume,
+        "tokenizer_workers": tokenizer_workers,
         "vocab_size_actual": tokenizer.vocab_size,
     }
     return json.dumps(tokenizer_map_payload, ensure_ascii=False, indent=2) + "\n", training_stats

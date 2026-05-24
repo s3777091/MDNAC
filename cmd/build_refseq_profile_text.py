@@ -65,6 +65,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--tokenizer-workers",
+        type=int,
+        default=1,
+        help=(
+            "CPU worker processes for tokenizer BPE cache counting and rewrite. "
+            "Use 0 to auto-detect all CPUs. Default keeps the historical single-process behavior."
+        ),
+    )
+    parser.add_argument(
         "--profile-vocab-size",
         type=int,
         default=None,
@@ -146,6 +155,7 @@ def main() -> int:
             vocab_size=effective_vocab_size,
             tokenizer_train_line_limit=args.tokenizer_train_line_limit,
             tokenizer_resume=not args.no_tokenizer_resume,
+            tokenizer_workers=args.tokenizer_workers,
             tokenizer_progress_callback=tokenizer_progress_callback,
         )
         print("[mode] rebuild-tokenizer-map-from-train")
@@ -170,6 +180,7 @@ def main() -> int:
         skip_artifacts=args.skip,
         tokenizer_train_line_limit=args.tokenizer_train_line_limit,
         tokenizer_resume=not args.no_tokenizer_resume,
+        tokenizer_workers=args.tokenizer_workers,
         tokenizer_progress_callback=tokenizer_progress_callback,
     )
     print(f"[input] {summary.input_root}")
@@ -216,6 +227,13 @@ def _build_tokenizer_progress_reporter():
                 file=sys.stderr,
                 flush=True,
             )
+        elif event_name == "tokenizer_parallel_disabled":
+            print(
+                f"[tokenizer] parallel disabled workers={event.get('workers')} "
+                f"reason={event.get('reason')}",
+                file=sys.stderr,
+                flush=True,
+            )
         elif event_name == "token_cache_start":
             print(
                 f"[tokenizer] cache start total={_format_bytes(event.get('total_bytes'))} "
@@ -243,7 +261,7 @@ def _build_tokenizer_progress_reporter():
             print(
                 f"[tokenizer] merge {event.get('merge_index')}/{event.get('merge_total')} "
                 f"count start vocab={event.get('vocab_size')}/{event.get('target_vocab_size')} "
-                f"cache={_format_bytes(event.get('total_bytes'))}",
+                f"cache={_format_bytes(event.get('total_bytes'))}{_format_workers(event)}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -251,14 +269,15 @@ def _build_tokenizer_progress_reporter():
             print(
                 f"[tokenizer] merge {event.get('merge_index')}/{event.get('merge_total')} "
                 f"count {_format_percent(event)} pairs={event.get('pair_kinds')} "
-                f"seq={event.get('sequences')}",
+                f"seq={event.get('sequences')}{_format_workers(event)}",
                 file=sys.stderr,
                 flush=True,
             )
         elif event_name == "bpe_count_complete":
             print(
                 f"[tokenizer] merge {event.get('merge_index')}/{event.get('merge_total')} "
-                f"count complete {_format_percent(event)} pairs={event.get('pair_kinds')}",
+                f"count complete {_format_percent(event)} pairs={event.get('pair_kinds')}"
+                f"{_format_workers(event)}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -273,7 +292,7 @@ def _build_tokenizer_progress_reporter():
         elif event_name == "bpe_rewrite_start":
             print(
                 f"[tokenizer] merge {event.get('merge_index')}/{event.get('merge_total')} "
-                f"rewrite start cache={_format_bytes(event.get('total_bytes'))}",
+                f"rewrite start cache={_format_bytes(event.get('total_bytes'))}{_format_workers(event)}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -281,7 +300,7 @@ def _build_tokenizer_progress_reporter():
             print(
                 f"[tokenizer] merge {event.get('merge_index')}/{event.get('merge_total')} "
                 f"rewrite {_format_percent(event)} seq={event.get('sequences')} "
-                f"kept={event.get('rewritten_sequences')}",
+                f"kept={event.get('rewritten_sequences')}{_format_workers(event)}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -289,7 +308,7 @@ def _build_tokenizer_progress_reporter():
             print(
                 f"[tokenizer] merge {event.get('merge_index')}/{event.get('merge_total')} "
                 f"rewrite complete {_format_percent(event)} "
-                f"next_cache={_format_bytes(event.get('cache_bytes'))}",
+                f"next_cache={_format_bytes(event.get('cache_bytes'))}{_format_workers(event)}",
                 file=sys.stderr,
                 flush=True,
             )
@@ -311,6 +330,11 @@ def _format_percent(event: dict[str, object]) -> str:
     if total_bytes <= 0:
         return f"{_format_bytes(bytes_read)}"
     return f"{(bytes_read / total_bytes) * 100:.1f}% {_format_bytes(bytes_read)}/{_format_bytes(total_bytes)}"
+
+
+def _format_workers(event: dict[str, object]) -> str:
+    workers = event.get("workers")
+    return f" workers={workers}" if workers is not None else ""
 
 
 def _format_bytes(value: object) -> str:
