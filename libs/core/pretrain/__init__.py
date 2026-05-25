@@ -49,6 +49,8 @@ from .protein_lm import (
 )
 from .training import (
     compute_mdc_causal_lm_loss,
+    create_moon_optimizers,
+    create_muon_optimizers,
     evaluate_mdc_causal_lm_batch_loss,
     run_mdc_causal_lm_batch_epoch,
 )
@@ -85,6 +87,8 @@ __all__ = [
     "build_qwen3_5_config",
     "count_trainable_parameters",
     "compute_mdc_causal_lm_loss",
+    "create_moon_optimizers",
+    "create_muon_optimizers",
     "create_mdc_profile_sequence_pretrain_dataloader",
     "create_protein_lm_dataloader",
     "evaluate_mdc_causal_lm_batch_loss",

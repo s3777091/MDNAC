@@ -6,9 +6,8 @@ import shutil
 from pathlib import Path
 from typing import Any, Mapping
 
-from ...data.paths import AvaDataPaths, DEFAULT_QWEN_DIRNAME
 
-
+DEFAULT_QWEN_DIRNAME = "Qwen3.5-0.8B"
 DEFAULT_QWEN_REPO_ID = "Qwen/Qwen3.5-0.8B"
 QWEN_REPO_ID_2B = "Qwen/Qwen3.5-2B"
 GENERIC_ENV_VARS = (
@@ -17,6 +16,23 @@ GENERIC_ENV_VARS = (
     "HF_QWEN_DIR",
 )
 DEFAULT_ENV_VARS = ("QWEN3_5_0_8B_DIR", *GENERIC_ENV_VARS)
+
+
+class _QwenProjectPaths:
+    def __init__(self, project_root: str | Path) -> None:
+        self.root = Path(project_root).resolve()
+        self.pretrained_root = self.root / "data" / "pretrained"
+        self.models_root = self.root / "models"
+        self.checkpoints_root = self.root / "data" / "checkpoints"
+        self.tokenizers_root = self.root / "data" / "tokenizers"
+
+    def qwen_tokenizer_dir(self, *, model_dirname: str) -> Path:
+        return self.tokenizers_root / model_dirname
+
+    def ensure_qwen_tokenizer_dir(self, *, model_dirname: str) -> Path:
+        path = self.qwen_tokenizer_dir(model_dirname=model_dirname)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
 
 def _repo_id_basename(repo_id: str) -> str:
@@ -82,7 +98,7 @@ def _default_project_model_dirs(
     *,
     repo_id: str = DEFAULT_QWEN_REPO_ID,
 ) -> tuple[Path, ...]:
-    data_paths = AvaDataPaths.from_project_root(project_root)
+    data_paths = _QwenProjectPaths(project_root)
     model_dirname = qwen_repo_id_to_dirname(repo_id)
     model_slug = _model_dirname_to_slug(model_dirname)
     return (
@@ -162,7 +178,7 @@ def resolve_qwen_tokenizer_json(
     extra_sources: list[str | Path] | None = None,
 ) -> Path:
     root = Path(project_root).resolve()
-    data_paths = AvaDataPaths.from_project_root(root)
+    data_paths = _QwenProjectPaths(root)
     resolved_repo_id = resolve_qwen_repo_id(repo_id)
     model_dirname = qwen_repo_id_to_dirname(resolved_repo_id)
     destination_dir = (
@@ -196,7 +212,7 @@ def resolve_qwen_tokenizer_json(
 
     if allow_download:
         try:
-            from .ch05 import download_from_huggingface
+            from ..modeling import download_from_huggingface
 
             downloaded_path = download_from_huggingface(
                 repo_id=resolved_repo_id,

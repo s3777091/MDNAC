@@ -5,7 +5,7 @@ from pathlib import Path
 
 import torch
 
-from .ch05 import download_from_huggingface
+from ..modeling import download_from_huggingface
 
 
 def assign_parameter(left: torch.Tensor, right: torch.Tensor, tensor_name: str = "unknown") -> torch.Tensor:

@@ -6,12 +6,13 @@ import torch
 
 from libs.core import (
     IGNORE_INDEX,
+    MDCDecoderCache,
     MicrobialDecoderCoreApp,
     ProfileSequenceBatchBuilder,
     build_mdc_tiny_config,
 )
 from libs.core.mdc import MDCDecoderModel
-from models.qwen3_5.ch05 import Qwen3_5Model as ReferenceQwen3_5Model
+from models.qwen3_5.modeling import KVCache, Qwen3_5Model as ReferenceQwen3_5Model
 
 
 class ProfileSequenceBatchBuilderTests(unittest.TestCase):
@@ -123,6 +124,86 @@ class ProfileSequenceBatchBuilderTests(unittest.TestCase):
 
 
 class MDCDecoderModelTests(unittest.TestCase):
+    def test_reference_qwen_kv_cache_matches_full_forward(self) -> None:
+        cfg = {
+            "vocab_size": 97,
+            "context_length": 16,
+            "emb_dim": 32,
+            "n_heads": 4,
+            "n_layers": 2,
+            "hidden_dim": 64,
+            "head_dim": 8,
+            "qk_norm": False,
+            "n_kv_groups": 2,
+            "rope_base": 10_000.0,
+            "partial_rotary_factor": 1.0,
+            "rms_norm_eps": 1e-6,
+            "linear_conv_kernel_dim": 2,
+            "linear_key_head_dim": 8,
+            "linear_value_head_dim": 8,
+            "linear_num_key_heads": 2,
+            "linear_num_value_heads": 2,
+            "layer_types": ["linear_attention", "full_attention"],
+            "dtype": torch.float32,
+        }
+
+        torch.manual_seed(321)
+        model = ReferenceQwen3_5Model(cfg)
+        model.eval()
+        token_ids = torch.randint(0, cfg["vocab_size"], (1, 6), dtype=torch.long)
+
+        full_logits = model(token_ids)
+        cache = KVCache(n_layers=cfg["n_layers"])
+        model.reset_kv_cache(cache)
+        cached_logits = torch.cat(
+            [model(token_ids[:, pos : pos + 1], cache=cache) for pos in range(token_ids.size(1))],
+            dim=1,
+        )
+
+        torch.testing.assert_close(cached_logits, full_logits, atol=1e-5, rtol=1e-4)
+        cached_k, _ = cache.get(1)
+        self.assertEqual((1, cfg["n_kv_groups"], token_ids.size(1), cfg["head_dim"]), tuple(cached_k.shape))
+
+    def test_mdc_kv_cache_matches_full_forward(self) -> None:
+        cfg = {
+            "vocab_size": 97,
+            "context_length": 16,
+            "emb_dim": 32,
+            "n_heads": 4,
+            "n_layers": 2,
+            "hidden_dim": 64,
+            "head_dim": 8,
+            "qk_norm": False,
+            "n_kv_groups": 2,
+            "rope_base": 10_000.0,
+            "partial_rotary_factor": 1.0,
+            "rms_norm_eps": 1e-6,
+            "linear_conv_kernel_dim": 2,
+            "linear_key_head_dim": 8,
+            "linear_value_head_dim": 8,
+            "linear_num_key_heads": 2,
+            "linear_num_value_heads": 2,
+            "layer_types": ["linear_attention", "full_attention"],
+            "dtype": torch.float32,
+        }
+
+        torch.manual_seed(654)
+        model = MDCDecoderModel(cfg)
+        model.eval()
+        token_ids = torch.randint(0, cfg["vocab_size"], (1, 6), dtype=torch.long)
+
+        full_logits = model(token_ids)
+        cache = MDCDecoderCache(n_layers=cfg["n_layers"])
+        model.reset_kv_cache(cache)
+        cached_logits = torch.cat(
+            [model(token_ids[:, pos : pos + 1], cache=cache) for pos in range(token_ids.size(1))],
+            dim=1,
+        )
+
+        torch.testing.assert_close(cached_logits, full_logits, atol=1e-5, rtol=1e-4)
+        cached_k, _ = cache.get(1)
+        self.assertEqual((1, cfg["n_kv_groups"], token_ids.size(1), cfg["head_dim"]), tuple(cached_k.shape))
+
     def test_matches_reference_qwen_core_forward(self) -> None:
         cfg = {
             "vocab_size": 97,

@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Sequence
 
-from .reasoning import strip_think_tags
-
-
 DEFAULT_SYSTEM_FIELDS = ("system", "system_prompt", "developer_prompt", "persona")
 DEFAULT_INSTRUCTION_FIELDS = ("instruction", "prompt", "question", "query", "user_input", "user")
 DEFAULT_INPUT_FIELDS = ("input", "customer_context", "details", "metadata")
@@ -24,9 +21,11 @@ def build_instruction_generation_tokenizer_settings() -> dict[str, bool | str]:
     return {
         "apply_chat_template": True,
         "add_generation_prompt": True,
-        "add_thinking": False,
-        "thinking_template": "tagged",
     }
+
+
+def _strip_legacy_think_tags(text: Any) -> str:
+    return str(text or "").replace("<think>", "").replace("</think>", "").strip()
 
 
 def default_instruction_checkpoint_metadata(
@@ -162,7 +161,7 @@ def format_instruction_response(
     response_field: str | None = None,
     response_formatter: Callable[[str], str] | None = None,
 ) -> str:
-    response = strip_think_tags(
+    response = _strip_legacy_think_tags(
         _resolve_field(
             entry,
             response_field,

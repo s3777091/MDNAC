@@ -14,7 +14,9 @@ from libs.core import (
     build_or_load_protein_tokenizer,
     build_qwen3_5_config,
     compute_mdc_causal_lm_loss,
+    create_muon_optimizers,
     create_protein_lm_dataloader,
+    generate_protein_text,
     load_protein_corpus_text,
     load_protein_pretrain_checkpoint,
     save_protein_pretrain_checkpoint,
@@ -167,6 +169,100 @@ class ProteinLMPretrainTests(unittest.TestCase):
         self.assertEqual(QWEN3_5_BACKBONE_FAMILY, checkpoint["backbone_family"])
         self.assertEqual(1, checkpoint["global_step"])
         self.assertEqual(str(tokenizer_artifact.tokenizer_map_path.resolve()), checkpoint["tokenizer_map_path"])
+
+    def test_generate_protein_text_cache_matches_uncached(self) -> None:
+        tokenizer_artifact = build_or_load_protein_tokenizer(self.train_path, vocab_size=64)
+        base_config = build_qwen3_5_config(
+            "0.8B",
+            vocab_size=tokenizer_artifact.vocab_size,
+            context_length=12,
+            dtype=torch.float32,
+        )
+        model_config = build_mdc_config_from_qwen3_5_config(
+            {
+                **base_config,
+                "emb_dim": 32,
+                "n_heads": 4,
+                "n_layers": 2,
+                "hidden_dim": 64,
+                "head_dim": 8,
+                "n_kv_groups": 2,
+                "linear_key_head_dim": 8,
+                "linear_value_head_dim": 8,
+                "linear_num_key_heads": 2,
+                "linear_num_value_heads": 2,
+            },
+            dtype=torch.float32,
+        )
+        torch.manual_seed(123)
+        model = MDCDecoderModel(model_config)
+
+        cached = generate_protein_text(
+            model,
+            tokenizer_artifact.tokenizer,
+            device="cpu",
+            max_new_tokens=3,
+            context_length=12,
+            use_cache=True,
+            stop_at_endoftext=False,
+        )
+        uncached = generate_protein_text(
+            model,
+            tokenizer_artifact.tokenizer,
+            device="cpu",
+            max_new_tokens=3,
+            context_length=12,
+            use_cache=False,
+            stop_at_endoftext=False,
+        )
+
+        self.assertEqual(uncached, cached)
+
+    def test_create_muon_optimizers_groups_matrix_params(self) -> None:
+        class FakeMuon(torch.optim.SGD):
+            def __init__(self, params, *, lr, weight_decay=0.0, adjust_lr_fn=None):
+                self.adjust_lr_fn = adjust_lr_fn
+                super().__init__(params, lr=lr, weight_decay=weight_decay)
+
+        original_muon = getattr(torch.optim, "Muon", None)
+        torch.optim.Muon = FakeMuon
+        try:
+            model = torch.nn.Sequential(
+                torch.nn.Embedding(8, 4),
+                torch.nn.Linear(4, 4),
+                torch.nn.LayerNorm(4),
+            )
+            optimizers = create_muon_optimizers(
+                model,
+                adamw_learning_rate=1e-3,
+                muon_learning_rate=2e-3,
+                weight_decay=0.01,
+            )
+        finally:
+            if original_muon is None:
+                delattr(torch.optim, "Muon")
+            else:
+                torch.optim.Muon = original_muon
+
+        self.assertEqual(2, len(optimizers))
+        self.assertIsInstance(optimizers[0], FakeMuon)
+        self.assertIsInstance(optimizers[1], torch.optim.AdamW)
+        self.assertEqual("match_rms_adamw", optimizers[0].adjust_lr_fn)
+
+        muon_param_ids = {
+            id(parameter)
+            for group in optimizers[0].param_groups
+            for parameter in group["params"]
+        }
+        adamw_param_ids = {
+            id(parameter)
+            for group in optimizers[1].param_groups
+            for parameter in group["params"]
+        }
+
+        self.assertIn(id(model[1].weight), muon_param_ids)
+        self.assertNotIn(id(model[0].weight), muon_param_ids)
+        self.assertIn(id(model[0].weight), adamw_param_ids)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable, Sequence
 
 import torch
 import torch.nn.functional as F
@@ -10,6 +10,66 @@ from libs.core.interfaces import CausalLMBatch
 
 def compute_mdc_causal_lm_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     return F.cross_entropy(logits.flatten(0, 1), labels.flatten())
+
+
+def create_muon_optimizers(
+    model: torch.nn.Module,
+    *,
+    adamw_learning_rate: float,
+    muon_learning_rate: float | None = None,
+    weight_decay: float = 0.1,
+) -> list[torch.optim.Optimizer]:
+    muon_cls = getattr(torch.optim, "Muon", None)
+    if muon_cls is None:
+        raise RuntimeError("torch.optim.Muon is not available in this PyTorch build.")
+
+    embedding_param_names: set[str] = set()
+    for module_name, module in model.named_modules():
+        if isinstance(module, torch.nn.Embedding):
+            for param_name, _ in module.named_parameters(recurse=False):
+                full_name = f"{module_name}.{param_name}" if module_name else param_name
+                embedding_param_names.add(full_name)
+
+    muon_params: list[torch.nn.Parameter] = []
+    adamw_params: list[torch.nn.Parameter] = []
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        if parameter.ndim == 2 and name not in embedding_param_names:
+            muon_params.append(parameter)
+        else:
+            adamw_params.append(parameter)
+
+    optimizers: list[torch.optim.Optimizer] = []
+    if muon_params:
+        optimizers.append(
+            muon_cls(
+                muon_params,
+                lr=float(muon_learning_rate if muon_learning_rate is not None else adamw_learning_rate),
+                weight_decay=weight_decay,
+                adjust_lr_fn="match_rms_adamw",
+            )
+        )
+    if adamw_params:
+        optimizers.append(torch.optim.AdamW(adamw_params, lr=adamw_learning_rate, weight_decay=weight_decay))
+    if not optimizers:
+        raise ValueError("No trainable parameters found.")
+    return optimizers
+
+
+def create_moon_optimizers(
+    model: torch.nn.Module,
+    *,
+    adamw_learning_rate: float,
+    muon_learning_rate: float | None = None,
+    weight_decay: float = 0.1,
+) -> list[torch.optim.Optimizer]:
+    return create_muon_optimizers(
+        model,
+        adamw_learning_rate=adamw_learning_rate,
+        muon_learning_rate=muon_learning_rate,
+        weight_decay=weight_decay,
+    )
 
 
 def evaluate_mdc_causal_lm_batch_loss(
@@ -40,18 +100,20 @@ def evaluate_mdc_causal_lm_batch_loss(
 def run_mdc_causal_lm_batch_epoch(
     model_or_app,
     data_loader,
-    optimizer: torch.optim.Optimizer,
+    optimizer: torch.optim.Optimizer | Sequence[torch.optim.Optimizer],
     *,
     device: torch.device | str,
     grad_clip_norm: float | None = None,
 ) -> float:
     model_or_app.train()
+    optimizers = _as_optimizer_list(optimizer)
     losses: list[float] = []
 
     for batch in data_loader:
         resolved_batch = _move_causal_lm_batch_to_device(batch, device=device)
 
-        optimizer.zero_grad(set_to_none=True)
+        for opt in optimizers:
+            opt.zero_grad(set_to_none=True)
         logits = _forward_causal_lm_batch(model_or_app, resolved_batch)
         loss = compute_mdc_causal_lm_loss(logits, resolved_batch.labels)
         loss.backward()
@@ -59,7 +121,8 @@ def run_mdc_causal_lm_batch_epoch(
         if grad_clip_norm is not None:
             torch.nn.utils.clip_grad_norm_(model_or_app.parameters(), grad_clip_norm)
 
-        optimizer.step()
+        for opt in optimizers:
+            opt.step()
         losses.append(float(loss.item()))
 
     if not losses:
@@ -86,3 +149,15 @@ def _forward_causal_lm_batch(
     if hasattr(model_or_app, "forward_causal_lm_batch"):
         return model_or_app.forward_causal_lm_batch(batch)
     return model_or_app(batch.input_ids, attn_mask=batch.attention_mask)
+
+
+def _as_optimizer_list(
+    optimizer: torch.optim.Optimizer | Sequence[torch.optim.Optimizer],
+) -> list[torch.optim.Optimizer]:
+    if isinstance(optimizer, torch.optim.Optimizer):
+        return [optimizer]
+
+    optimizers = list(optimizer)
+    if not optimizers:
+        raise ValueError("optimizer sequence must not be empty.")
+    return optimizers

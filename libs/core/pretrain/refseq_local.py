@@ -582,19 +582,6 @@ def dedupe_local_refseq_sequence_only_artifacts(
     return summary
 
 
-def _load_previous_compiled_records(
-    *,
-    instruction_path: Path,
-    source_name: str,
-    profile_config: MDCProfileCompilerConfig,
-) -> list[RefseqCompiledRecord]:
-    return _load_compiled_records_jsonl(
-        instruction_path,
-        source_name=source_name,
-        profile_config=profile_config,
-    )
-
-
 def _resolve_scoped_input_root(input_root: Path, output_dir: Path) -> Path:
     scope_candidate = input_root / output_dir.name
     if output_dir.name and scope_candidate.is_dir():

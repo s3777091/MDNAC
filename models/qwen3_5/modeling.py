@@ -1,5 +1,6 @@
 import os
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -7,7 +8,7 @@ from urllib.request import Request, urlopen
 import torch
 import torch.nn as nn
 
-from .qwen3_5_transformers import Qwen3_5GatedDeltaNet
+from .support.linear_attention import Qwen3_5GatedDeltaNet
 
 
 QWEN3_5_CONFIG_0_8B = {
@@ -173,33 +174,24 @@ class GroupedQueryAttention(nn.Module):
         if self.k_norm:
             keys_new = self.k_norm(keys_new)
 
-        prev_len = 0
+        queries = apply_rope(queries, cos, sin, offset=start_pos)
+        keys_new = apply_rope(keys_new, cos, sin, offset=start_pos)
+
         if cache is not None:
             prev_k, prev_v = cache
             if prev_k is not None:
-                prev_len = prev_k.size(2)
-                keys_cat_raw = torch.cat([prev_k, keys_new], dim=2)
-                values_cat_raw = torch.cat([prev_v, values_new], dim=2)
+                keys = torch.cat([prev_k, keys_new], dim=2)
+                values = torch.cat([prev_v, values_new], dim=2)
             else:
-                keys_cat_raw = keys_new
-                values_cat_raw = values_new
+                keys = keys_new
+                values = values_new
         else:
-            keys_cat_raw = keys_new
-            values_cat_raw = values_new
+            keys = keys_new
+            values = values_new
 
-        queries = apply_rope(queries, cos, sin, offset=start_pos)
-        keys = apply_rope(keys_cat_raw, cos, sin, offset=start_pos - prev_len)
-
+        next_cache = (keys, values)
         keys = keys.repeat_interleave(self.group_size, dim=1)
-        values = values_cat_raw.repeat_interleave(self.group_size, dim=1)
-
-        if cache is not None and cache[0] is not None:
-            next_cache = (
-                torch.cat([cache[0], keys_new], dim=2),
-                torch.cat([cache[1], values_new], dim=2),
-            )
-        else:
-            next_cache = (keys_new, values_new)
+        values = values.repeat_interleave(self.group_size, dim=1)
 
         attn_scores = queries @ keys.transpose(2, 3)
         attn_scores = attn_scores.masked_fill(mask, -torch.inf)
@@ -434,8 +426,13 @@ class Qwen3_5Model(nn.Module):
         logits = self.out_head(x.to(self.cfg["dtype"]))
         return logits
 
-    def reset_kv_cache(self):
+    def create_kv_cache(self):
+        return KVCache(n_layers=self.cfg["n_layers"])
+
+    def reset_kv_cache(self, cache=None):
         self.current_pos = 0
+        if cache is not None:
+            cache.reset()
 
 
 def build_model(cfg):
@@ -455,8 +452,8 @@ def generate_text_simple(
 
     with torch.no_grad():
         if use_cache:
-            cache = KVCache(n_layers=model.cfg["n_layers"])
-            model.reset_kv_cache()
+            cache = model.create_kv_cache()
+            model.reset_kv_cache(cache)
             logits = model(idx[:, -ctx_len:], cache=cache)
 
             for _ in range(max_new_tokens):
@@ -481,8 +478,8 @@ def generate_text_simple_stream(model, token_ids, max_new_tokens, eos_token_id=N
     ctx_len = context_size or model.cfg["context_length"]
 
     with torch.no_grad():
-        cache = KVCache(n_layers=model.cfg["n_layers"])
-        model.reset_kv_cache()
+        cache = model.create_kv_cache()
+        model.reset_kv_cache(cache)
         logits = model(token_ids[:, -ctx_len:], cache=cache)
 
         for _ in range(max_new_tokens):
@@ -532,9 +529,8 @@ class Qwen3_5Tokenizer:
         "<|quad_start|>", "<|quad_end|>",
         "<|vision_start|>", "<|vision_end|>",
         "<|vision_pad|>", "<|image_pad|>", "<|video_pad|>",
-        "<think>", "</think>",
     ]
-    _SPLIT_RE = re.compile(r"(<\|[^>]+?\|>|<think>|</think>)")
+    _SPLIT_RE = re.compile(r"(<\|[^>]+?\|>)")
 
     def __init__(
         self,
@@ -549,9 +545,9 @@ class Qwen3_5Tokenizer:
 
         self.apply_chat_template = apply_chat_template
         self.add_generation_prompt = add_generation_prompt
+        # Kept for checkpoint/settings compatibility. This protein/instruction
+        # model does not insert thinking delimiters into prompts.
         self.add_thinking = add_thinking
-        if thinking_template not in {"tagged", "reasoning"}:
-            raise ValueError("thinking_template must be 'tagged' or 'reasoning'.")
         self.thinking_template = thinking_template
 
         tok_file = Path(tokenizer_file_path)
@@ -605,11 +601,6 @@ class Qwen3_5Tokenizer:
         text = f"<|im_start|>user\n{user_msg}<|im_end|>\n"
         if self.add_generation_prompt:
             text += "<|im_start|>assistant\n"
-            if self.add_thinking:
-                if self.thinking_template == "tagged":
-                    text += "<think>\n"
-            else:
-                text += "<think>\n\n</think>\n\n"
         return text
 
 
@@ -677,6 +668,77 @@ def generate_and_print_sample(model, tokenizer, device, start_context):
     model.train()
 
 
+def create_muon_optimizers(
+    model,
+    *,
+    adamw_learning_rate,
+    muon_learning_rate=None,
+    weight_decay=0.1,
+):
+    muon_cls = getattr(torch.optim, "Muon", None)
+    if muon_cls is None:
+        raise RuntimeError("torch.optim.Muon is not available in this PyTorch build.")
+
+    embedding_param_names = set()
+    for module_name, module in model.named_modules():
+        if isinstance(module, torch.nn.Embedding):
+            for param_name, _ in module.named_parameters(recurse=False):
+                full_name = f"{module_name}.{param_name}" if module_name else param_name
+                embedding_param_names.add(full_name)
+
+    muon_params = []
+    adamw_params = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        if param.ndim == 2 and name not in embedding_param_names:
+            muon_params.append(param)
+        else:
+            adamw_params.append(param)
+
+    optimizers = []
+    if muon_params:
+        optimizers.append(
+            muon_cls(
+                muon_params,
+                lr=float(muon_learning_rate if muon_learning_rate is not None else adamw_learning_rate),
+                weight_decay=weight_decay,
+                adjust_lr_fn="match_rms_adamw",
+            )
+        )
+    if adamw_params:
+        optimizers.append(torch.optim.AdamW(adamw_params, lr=adamw_learning_rate, weight_decay=weight_decay))
+    if not optimizers:
+        raise ValueError("No trainable parameters found.")
+    return optimizers
+
+
+def create_moon_optimizers(
+    model,
+    *,
+    adamw_learning_rate,
+    muon_learning_rate=None,
+    weight_decay=0.1,
+):
+    return create_muon_optimizers(
+        model,
+        adamw_learning_rate=adamw_learning_rate,
+        muon_learning_rate=muon_learning_rate,
+        weight_decay=weight_decay,
+    )
+
+
+def _as_optimizer_list(optimizer):
+    if isinstance(optimizer, torch.optim.Optimizer):
+        return [optimizer]
+    if isinstance(optimizer, Sequence):
+        optimizers = list(optimizer)
+        if not optimizers:
+            raise ValueError("optimizer sequence must not be empty.")
+        return optimizers
+    raise TypeError("optimizer must be a torch optimizer or a sequence of optimizers.")
+
+
 def train_model_simple(
     model,
     train_loader,
@@ -693,6 +755,7 @@ def train_model_simple(
     compile_model=False,
     eval_callback=None,
 ):
+    optimizers = _as_optimizer_list(optimizer)
     amp_enabled = use_amp and device.type == "cuda"
     amp_dtype = torch.bfloat16 if (amp_enabled and getattr(torch.cuda, "is_bf16_supported", lambda: False)()) else torch.float16
     scaler_enabled = amp_enabled and amp_dtype == torch.float16
@@ -730,11 +793,14 @@ def train_model_simple(
 
             if (step_in_epoch + 1) % gradient_accumulation_steps == 0:
                 if scaler_enabled:
-                    scaler.step(optimizer)
+                    for opt in optimizers:
+                        scaler.step(opt)
                     scaler.update()
                 else:
-                    optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
+                    for opt in optimizers:
+                        opt.step()
+                for opt in optimizers:
+                    opt.zero_grad(set_to_none=True)
 
             tokens_seen += input_batch.numel()
             global_step += 1
@@ -771,11 +837,14 @@ def train_model_simple(
         # flush remaining accumulated gradients at end of epoch
         if (step_in_epoch + 1) % gradient_accumulation_steps != 0:
             if scaler_enabled:
-                scaler.step(optimizer)
+                for opt in optimizers:
+                    scaler.step(opt)
                 scaler.update()
             else:
-                optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
+                for opt in optimizers:
+                    opt.step()
+            for opt in optimizers:
+                opt.zero_grad(set_to_none=True)
 
         generate_and_print_sample(
             model,

@@ -9,8 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import torch
 
-from ...pipeline.runtime.artifacts import load_checkpoint
-from .ch05 import Qwen3_5Tokenizer
+from ..modeling import Qwen3_5Tokenizer
 from .hf_utils import DEFAULT_QWEN_REPO_ID, resolve_qwen_tokenizer_json
 
 if TYPE_CHECKING:
@@ -31,6 +30,10 @@ DEFAULT_OLLAMA_STOP_TOKENS = (
     "<|im_end|>",
     "<|endoftext|>",
 )
+
+
+def load_checkpoint(checkpoint_path: str | Path, map_location: torch.device | str = "cpu") -> dict[str, Any]:
+    return torch.load(Path(checkpoint_path), map_location=map_location)
 
 
 @dataclass(frozen=True)
@@ -494,7 +497,6 @@ def export_checkpoint_to_hf_directory(
                 "tokenizer_config_path": str(tokenizer_config_path),
                 "model_config": model_config,
                 "instruction_settings": checkpoint.get("instruction_settings"),
-                "reasoning_settings": checkpoint.get("reasoning_settings"),
                 "chatbot_settings": checkpoint.get("chatbot_settings"),
                 "inference_tokenizer_settings": checkpoint.get("inference_tokenizer_settings"),
             },

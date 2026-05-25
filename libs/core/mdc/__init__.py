@@ -5,15 +5,37 @@ from .config import (
     build_mdc_default_config,
     build_mdc_tiny_config,
 )
-from .model import MDCDecoderCache, MDCDecoderModel, compute_rope_params
+from .model import (
+    FeedForward,
+    GroupedQueryAttention,
+    MDCConfigAdapter,
+    MDCDecoderCache,
+    MDCDecoderModel,
+    MDCLinearAttentionCache,
+    RMSNorm,
+    TokenMixerBuilder,
+    TransformerBlock,
+    apply_rope,
+    build_token_mixer,
+    compute_rope_params,
+)
 
 __all__ = [
     "DEFAULT_MDC_LAYER_TYPES",
+    "FeedForward",
+    "GroupedQueryAttention",
+    "MDCConfigAdapter",
     "MDCDecoderCache",
     "MDCDecoderModel",
+    "MDCLinearAttentionCache",
     "MDCModelConfig",
+    "RMSNorm",
+    "TokenMixerBuilder",
+    "TransformerBlock",
+    "apply_rope",
     "build_default_mdc_layer_types",
     "build_mdc_default_config",
     "build_mdc_tiny_config",
+    "build_token_mixer",
     "compute_rope_params",
 ]
