@@ -1,13 +1,10 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Sequence
-
 import torch
 
 
 IGNORE_INDEX = -100
-
 
 @dataclass(slots=True)
 class CausalLMBatch:

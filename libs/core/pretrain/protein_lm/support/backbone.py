@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-
 import torch
-
 from libs.core.mdc.config import MDCModelConfig, build_default_mdc_layer_types
 
 

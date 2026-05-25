@@ -2,11 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Mapping, Sequence
-
 import torch
-
 from .interfaces import FusedProfileSequenceBatch
-
 
 @dataclass(slots=True, frozen=True)
 class FusedVocabularyLayout:
@@ -72,7 +69,6 @@ class ProfileSequenceFusionConfig:
     trim_source_eos: bool = True
     source_bos_token_id: int = 1
     source_eos_token_id: int = 2
-
 
 class ProfileSequenceBatchBuilder:
     def __init__(
