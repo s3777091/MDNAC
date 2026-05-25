@@ -3,7 +3,6 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-
 class RMSNorm(nn.Module):
     def __init__(self, emb_dim: int, eps: float = 1e-6) -> None:
         super().__init__()

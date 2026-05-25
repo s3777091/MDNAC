@@ -1,21 +1,25 @@
 from __future__ import annotations
 
 import json
+import random
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 
 from libs.core.interfaces import CausalLMBatch, IGNORE_INDEX
 from libs.core.mdc.config import MDCModelConfig
+from libs.data.config import DataConfig
+from libs.data.training.streaming import S3TextPart, downloaded_minio_text_part, list_minio_text_parts
 from libs.data.training.tokenizer import SequenceTokenizer
 from libs.data.training.tokenizer.constants import DEFAULT_VOCAB_SIZES
 from .support.backbone import (
-    QWEN3_5_BACKBONE_FAMILY,
-    QWEN3_5_PROTEIN_MODEL_FAMILY,
+    PROGEN_BACKBONE_FAMILY,
+    PROGEN_PROTEIN_MODEL_FAMILY,
     is_supported_protein_checkpoint_family,
 )
 
@@ -75,6 +79,105 @@ class ProteinCausalLMTextDataset(Dataset[ProteinCausalLMExample]):
         return self.examples[index]
 
 
+class ProteinCausalLMStreamingTextDataset(IterableDataset[ProteinCausalLMExample]):
+    def __init__(
+        self,
+        tokenizer: SequenceTokenizer,
+        *,
+        context_length: int,
+        prefix_uri: str | None = None,
+        part_uris: Sequence[str] | None = None,
+        part_paths: Sequence[Path | str] | None = None,
+        s3_client=None,
+        config: DataConfig | None = None,
+        cache_dir: Path | str | None = None,
+        keep_downloaded_parts: bool = False,
+        stride: int | None = None,
+        shuffle_parts: bool = False,
+        shuffle_examples: bool = False,
+        seed: int = 0,
+    ) -> None:
+        if context_length <= 1:
+            raise ValueError("context_length must be greater than 1.")
+
+        self.tokenizer = tokenizer
+        self.context_length = int(context_length)
+        self.stride = int(stride or context_length)
+        if self.stride <= 0:
+            raise ValueError("stride must be greater than 0.")
+
+        provided_sources = sum(
+            source is not None
+            for source in (prefix_uri, part_uris, part_paths)
+        )
+        if provided_sources != 1:
+            raise ValueError("Provide exactly one of prefix_uri, part_uris, or part_paths.")
+
+        if part_paths is not None:
+            self.parts = [Path(path) for path in part_paths]
+            missing_paths = [path for path in self.parts if not path.exists()]
+            if missing_paths:
+                raise FileNotFoundError(f"Protein training part was not found: {missing_paths[0]}")
+        else:
+            self.parts = list(
+                list_minio_text_parts(
+                    prefix_uri=prefix_uri,
+                    part_uris=part_uris,
+                    s3_client=s3_client,
+                    config=config,
+                    suffixes=(".txt",),
+                )
+            )
+        if not self.parts:
+            source = prefix_uri or ", ".join(part_uris or ())
+            raise FileNotFoundError(f"No protein training parts found in {source!r}.")
+
+        self._s3_client = s3_client
+        self.config = config
+        self.cache_dir = Path(cache_dir) if cache_dir is not None else None
+        self.keep_downloaded_parts = bool(keep_downloaded_parts)
+        self.shuffle_parts = bool(shuffle_parts)
+        self.shuffle_examples = bool(shuffle_examples)
+        self.seed = int(seed)
+
+    def __iter__(self):
+        parts, worker_id = _parts_for_current_worker(self.parts)
+        rng = random.Random(self.seed + worker_id)
+        if self.shuffle_parts:
+            rng.shuffle(parts)
+
+        for part in parts:
+            if isinstance(part, S3TextPart):
+                source = part.uri
+                with downloaded_minio_text_part(
+                    part,
+                    s3_client=self._s3_client,
+                    config=self.config,
+                    cache_dir=self.cache_dir,
+                    keep_downloaded_parts=self.keep_downloaded_parts,
+                ) as part_path:
+                    text = part_path.read_text(encoding="utf-8")
+            else:
+                source = str(part)
+                text = part.read_text(encoding="utf-8")
+
+            if not text.strip():
+                continue
+            _validate_protein_corpus_text(text, source=source)
+            token_ids = self.tokenizer.encode(text)
+            if len(token_ids) < 2:
+                raise ValueError(f"Protein corpus part must encode to at least 2 tokens: {source}")
+
+            examples = _build_causal_lm_examples(
+                token_ids,
+                context_length=self.context_length,
+                stride=self.stride,
+            )
+            if self.shuffle_examples:
+                rng.shuffle(examples)
+            yield from examples
+
+
 class ProteinCausalLMBatchCollator:
     def __init__(
         self,
@@ -120,6 +223,43 @@ def load_protein_corpus_text(train_text_path: Path | str) -> str:
     if PROTEIN_END_TOKEN not in text:
         raise ValueError(f"Protein corpus must contain {PROTEIN_END_TOKEN}.")
     return text
+
+
+def discover_protein_train_text_paths(
+    train_text_path: Path | str,
+    *,
+    part_glob: str = "train_part_*.txt",
+    prefer_parts: bool = True,
+) -> tuple[Path, ...]:
+    resolved_train_path = Path(train_text_path)
+    part_paths = tuple(sorted(resolved_train_path.parent.glob(part_glob), key=_natural_path_sort_key))
+
+    if prefer_parts and part_paths:
+        return part_paths
+    if resolved_train_path.exists():
+        return (resolved_train_path,)
+    if part_paths:
+        return part_paths
+
+    raise FileNotFoundError(
+        f"Protein corpus was not found. Expected {resolved_train_path} or parts matching "
+        f"{resolved_train_path.parent / part_glob}."
+    )
+
+
+def load_protein_corpus_text_parts(train_text_paths: Sequence[Path | str]) -> str:
+    resolved_paths = tuple(Path(path) for path in train_text_paths)
+    if not resolved_paths:
+        raise ValueError("train_text_paths must not be empty.")
+
+    texts = []
+    for path in resolved_paths:
+        texts.append(load_protein_corpus_text(path).rstrip("\r\n"))
+
+    corpus_text = "\n".join(texts) + "\n"
+    if not corpus_text.strip():
+        raise ValueError("Protein corpus parts are empty.")
+    return corpus_text
 
 
 def split_protein_corpus_text(
@@ -181,6 +321,47 @@ def build_or_load_protein_tokenizer(
     )
 
 
+def build_or_load_protein_tokenizer_from_text_paths(
+    train_text_paths: Sequence[Path | str],
+    *,
+    tokenizer_map_path: Path | str | None = None,
+    vocab_size: int = DEFAULT_VOCAB_SIZES["protein"],
+    rebuild: bool = False,
+) -> ProteinTokenizerArtifact:
+    resolved_train_paths = tuple(Path(path) for path in train_text_paths)
+    if not resolved_train_paths:
+        raise ValueError("train_text_paths must not be empty.")
+    resolved_tokenizer_path = (
+        Path(tokenizer_map_path)
+        if tokenizer_map_path is not None
+        else resolved_train_paths[0].with_name("tokenizer_map.json")
+    )
+
+    if resolved_tokenizer_path.exists() and not rebuild:
+        tokenizer = SequenceTokenizer.load_map(resolved_tokenizer_path)
+        if tokenizer.sequence_type != "protein":
+            raise ValueError("Loaded tokenizer_map.json is not a protein tokenizer.")
+        return ProteinTokenizerArtifact(
+            tokenizer=tokenizer,
+            tokenizer_map_path=resolved_tokenizer_path,
+            rebuilt=False,
+        )
+
+    text = load_protein_corpus_text_parts(resolved_train_paths)
+    tokenizer = SequenceTokenizer.from_text(
+        text,
+        sequence_type="protein",
+        vocab_size=vocab_size,
+    )
+    resolved_tokenizer_path.parent.mkdir(parents=True, exist_ok=True)
+    tokenizer.save_map(resolved_tokenizer_path)
+    return ProteinTokenizerArtifact(
+        tokenizer=tokenizer,
+        tokenizer_map_path=resolved_tokenizer_path,
+        rebuilt=True,
+    )
+
+
 def create_protein_lm_dataloader(
     text: str,
     tokenizer: SequenceTokenizer,
@@ -206,6 +387,55 @@ def create_protein_lm_dataloader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        drop_last=drop_last,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        collate_fn=collator,
+    )
+
+
+def create_streaming_protein_lm_dataloader(
+    tokenizer: SequenceTokenizer,
+    *,
+    context_length: int,
+    prefix_uri: str | None = None,
+    part_uris: Sequence[str] | None = None,
+    part_paths: Sequence[Path | str] | None = None,
+    s3_client=None,
+    config: DataConfig | None = None,
+    cache_dir: Path | str | None = None,
+    keep_downloaded_parts: bool = False,
+    stride: int | None = None,
+    batch_size: int = 4,
+    drop_last: bool = False,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+    shuffle_parts: bool = False,
+    shuffle_examples: bool = False,
+    seed: int = 0,
+) -> DataLoader[CausalLMBatch]:
+    dataset = ProteinCausalLMStreamingTextDataset(
+        tokenizer,
+        context_length=context_length,
+        prefix_uri=prefix_uri,
+        part_uris=part_uris,
+        part_paths=part_paths,
+        s3_client=s3_client,
+        config=config,
+        cache_dir=cache_dir,
+        keep_downloaded_parts=keep_downloaded_parts,
+        stride=stride,
+        shuffle_parts=shuffle_parts,
+        shuffle_examples=shuffle_examples,
+        seed=seed,
+    )
+    collator = ProteinCausalLMBatchCollator(
+        pad_token_id=tokenizer.str_to_int["<|pad|>"],
+    )
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
         drop_last=drop_last,
         num_workers=num_workers,
         pin_memory=pin_memory,
@@ -239,8 +469,8 @@ def save_protein_pretrain_checkpoint(
         serialized_model_config = dict(model_config)
 
     checkpoint: dict[str, Any] = {
-        "model_family": QWEN3_5_PROTEIN_MODEL_FAMILY,
-        "backbone_family": QWEN3_5_BACKBONE_FAMILY,
+        "model_family": PROGEN_PROTEIN_MODEL_FAMILY,
+        "backbone_family": PROGEN_BACKBONE_FAMILY,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": _optimizer_state_dict(optimizer),
         "model_config": dict(serialized_model_config),
@@ -436,3 +666,22 @@ def _build_causal_lm_examples(
             )
         )
     return examples
+
+
+def _validate_protein_corpus_text(text: str, *, source: str) -> None:
+    if PROTEIN_START_TOKEN not in text:
+        raise ValueError(f"Protein corpus part must contain {PROTEIN_START_TOKEN}: {source}")
+    if PROTEIN_END_TOKEN not in text:
+        raise ValueError(f"Protein corpus part must contain {PROTEIN_END_TOKEN}: {source}")
+
+
+def _parts_for_current_worker(parts: Sequence[S3TextPart | Path]) -> tuple[list[S3TextPart | Path], int]:
+    worker_info = get_worker_info()
+    if worker_info is None:
+        return list(parts), 0
+    return list(parts[worker_info.id :: worker_info.num_workers]), int(worker_info.id)
+
+
+def _natural_path_sort_key(path: Path) -> tuple[object, ...]:
+    parts = re.split(r"(\d+)", path.name)
+    return tuple(int(part) if part.isdigit() else part.lower() for part in parts)

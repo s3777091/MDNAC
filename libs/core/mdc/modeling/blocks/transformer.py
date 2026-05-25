@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-
 import torch
 import torch.nn as nn
-
 from ..components.feed_forward import FeedForward
 from ..components.normalization import RMSNorm
 from ..factories.mixers import build_token_mixer
 from ..interfaces.token_mixer import TokenMixerBuilder
-
 
 class TransformerBlock(nn.Module):
     def __init__(

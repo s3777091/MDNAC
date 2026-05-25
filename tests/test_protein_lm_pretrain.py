@@ -8,11 +8,11 @@ import torch
 
 from libs.core import (
     MDCDecoderModel,
-    QWEN3_5_BACKBONE_FAMILY,
-    QWEN3_5_PROTEIN_MODEL_FAMILY,
-    build_mdc_config_from_qwen3_5_config,
+    PROGEN_BACKBONE_FAMILY,
+    PROGEN_PROTEIN_MODEL_FAMILY,
+    build_mdc_config_from_progen_config,
     build_or_load_protein_tokenizer,
-    build_qwen3_5_config,
+    build_progen_config,
     compute_mdc_causal_lm_loss,
     create_muon_optimizers,
     create_protein_lm_dataloader,
@@ -57,23 +57,23 @@ class ProteinLMPretrainTests(unittest.TestCase):
         self.assertFalse(loaded.rebuilt)
         self.assertEqual(artifact.vocab_size, loaded.vocab_size)
 
-    def test_builds_qwen3_5_config_for_protein_mdc_model(self) -> None:
+    def test_builds_progen_config_for_protein_mdc_model(self) -> None:
         tokenizer_artifact = build_or_load_protein_tokenizer(self.train_path, vocab_size=64)
-        qwen_config = build_qwen3_5_config(
+        progen_config = build_progen_config(
             "0.8B",
             vocab_size=tokenizer_artifact.vocab_size,
             context_length=16,
             dtype=torch.float32,
         )
 
-        self.assertEqual("Qwen/Qwen3.5-0.8B", qwen_config["model_name"])
-        self.assertEqual(QWEN3_5_BACKBONE_FAMILY, qwen_config["backbone_family"])
-        self.assertEqual(1024, qwen_config["emb_dim"])
-        self.assertEqual(24, qwen_config["n_layers"])
-        self.assertTrue(bool(qwen_config["qk_norm"]))
+        self.assertEqual("ProGen/ProGen-0.8B", progen_config["model_name"])
+        self.assertEqual(PROGEN_BACKBONE_FAMILY, progen_config["backbone_family"])
+        self.assertEqual(1024, progen_config["emb_dim"])
+        self.assertEqual(24, progen_config["n_layers"])
+        self.assertTrue(bool(progen_config["qk_norm"]))
 
-        tiny_qwen_config = {
-            **qwen_config,
+        tiny_progen_config = {
+            **progen_config,
             "emb_dim": 32,
             "n_heads": 4,
             "n_layers": 2,
@@ -85,8 +85,8 @@ class ProteinLMPretrainTests(unittest.TestCase):
             "linear_num_key_heads": 2,
             "linear_num_value_heads": 2,
         }
-        model_config = build_mdc_config_from_qwen3_5_config(
-            tiny_qwen_config,
+        model_config = build_mdc_config_from_progen_config(
+            tiny_progen_config,
             dtype=torch.float32,
         )
 
@@ -94,6 +94,10 @@ class ProteinLMPretrainTests(unittest.TestCase):
         self.assertEqual(("linear_attention", "linear_attention"), model_config.layer_types)
         self.assertEqual(8, model_config.head_dim)
         self.assertTrue(model_config.qk_norm)
+
+    def test_rejects_unsupported_progen_2b_config(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Unknown ProGen config"):
+            build_progen_config("2B", vocab_size=64, context_length=16, dtype=torch.float32)
 
     def test_trains_one_batch_and_resumes_checkpoint(self) -> None:
         corpus = load_protein_corpus_text(self.train_path)
@@ -108,13 +112,13 @@ class ProteinLMPretrainTests(unittest.TestCase):
             shuffle=False,
         )
 
-        base_config = build_qwen3_5_config(
+        base_config = build_progen_config(
             "0.8B",
             vocab_size=tokenizer_artifact.vocab_size,
             context_length=12,
             dtype=torch.float32,
         )
-        model_config = build_mdc_config_from_qwen3_5_config(
+        model_config = build_mdc_config_from_progen_config(
             {
                 **base_config,
                 "emb_dim": 32,
@@ -165,20 +169,20 @@ class ProteinLMPretrainTests(unittest.TestCase):
             optimizer=resumed_optimizer,
         )
 
-        self.assertEqual(QWEN3_5_PROTEIN_MODEL_FAMILY, checkpoint["model_family"])
-        self.assertEqual(QWEN3_5_BACKBONE_FAMILY, checkpoint["backbone_family"])
+        self.assertEqual(PROGEN_PROTEIN_MODEL_FAMILY, checkpoint["model_family"])
+        self.assertEqual(PROGEN_BACKBONE_FAMILY, checkpoint["backbone_family"])
         self.assertEqual(1, checkpoint["global_step"])
         self.assertEqual(str(tokenizer_artifact.tokenizer_map_path.resolve()), checkpoint["tokenizer_map_path"])
 
     def test_generate_protein_text_cache_matches_uncached(self) -> None:
         tokenizer_artifact = build_or_load_protein_tokenizer(self.train_path, vocab_size=64)
-        base_config = build_qwen3_5_config(
+        base_config = build_progen_config(
             "0.8B",
             vocab_size=tokenizer_artifact.vocab_size,
             context_length=12,
             dtype=torch.float32,
         )
-        model_config = build_mdc_config_from_qwen3_5_config(
+        model_config = build_mdc_config_from_progen_config(
             {
                 **base_config,
                 "emb_dim": 32,

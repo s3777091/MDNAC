@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 class MDCLinearAttentionCache:
     def __init__(self, n_layers: int) -> None:
         self.conv_states = [None] * n_layers

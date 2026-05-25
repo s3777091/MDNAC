@@ -1,22 +1,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-
 import torch
 import torch.nn as nn
-
 from ...config import MDCModelConfig
 from ..blocks.transformer import TransformerBlock
 from ..cache.decoder_cache import MDCDecoderCache
 from ..components.normalization import RMSNorm
 from ..components.rope import compute_rope_params
 
-
 def _normalize_cfg(cfg: MDCModelConfig | Mapping[str, object]) -> dict[str, object]:
     if isinstance(cfg, MDCModelConfig):
         return cfg.to_dict()
     return dict(cfg)
-
 
 class MDCDecoderModel(nn.Module):
     def __init__(self, cfg: MDCModelConfig | Mapping[str, object]) -> None:

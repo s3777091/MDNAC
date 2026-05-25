@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from typing import Mapping
-
 import torch
 import torch.nn as nn
-
 from .fusion import (
     FusedVocabularyLayout,
     ProfileSequenceBatchBuilder,
@@ -12,7 +10,6 @@ from .fusion import (
 )
 from .interfaces import CausalLMBatch, FusedProfileSequenceBatch
 from .mdc import MDCDecoderModel, MDCModelConfig
-
 
 class MicrobialDecoderCoreApp(nn.Module):
     def __init__(

@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import json
+import random
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_info
 
 from libs.core.fusion import FusedVocabularyLayout, ProfileSequenceBatchBuilder, ProfileSequenceFusionConfig
 from libs.core.interfaces import CausalLMBatch, FusedProfileSequenceBatch
+from libs.data.config import DataConfig
 from libs.data.entities import PreparationSessionArtifact
+from libs.data.training.streaming import S3TextPart, downloaded_minio_text_part, list_minio_text_parts
 from libs.data.training import KmerTokenizer, ProfileBPETokenizer, ProfileSequencePair
 from libs.data.training.raw_pipeline.defaults import DEFAULT_KEYWORD_RULES
 from libs.data.training.raw_pipeline.helpers import match_rules
@@ -118,6 +121,7 @@ class MDCProfileSequencePretrainArtifacts:
     sequence_tokenizer: KmerTokenizer
     layout: FusedVocabularyLayout
     format_version: str = MDC_PROFILE_SEQUENCE_FORMAT
+    expected_record_count: int | None = None
 
     @classmethod
     def from_files(
@@ -183,8 +187,53 @@ class MDCProfileSequencePretrainArtifacts:
             tokenizer_map_path=resolved_directory / "tokenizer_map.json",
         )
 
+    @classmethod
+    def from_tokenizer_map_file(
+        cls,
+        tokenizer_map_path: Path | str,
+        *,
+        train_text_path: Path | str | None = None,
+    ) -> "MDCProfileSequencePretrainArtifacts":
+        resolved_tokenizer_map_path = Path(tokenizer_map_path)
+        tokenizer_map = json.loads(resolved_tokenizer_map_path.read_text(encoding="utf-8"))
+
+        if tokenizer_map.get("format") != MDC_PROFILE_SEQUENCE_FORMAT:
+            raise ValueError(
+                "tokenizer_map.json does not match the MDC profile-aware train.txt format. "
+                f"Expected format '{MDC_PROFILE_SEQUENCE_FORMAT}'."
+            )
+
+        profile_tokenizer = _load_profile_tokenizer_from_payload(tokenizer_map["profile_tokenizer"])
+        sequence_tokenizer = _load_kmer_tokenizer_from_payload(tokenizer_map["sequence_tokenizer"])
+        layout = _load_layout_from_payload(tokenizer_map["layout"])
+
+        dataset_sequence_type = str(tokenizer_map.get("sequence_type", sequence_tokenizer.sequence_type))
+        if dataset_sequence_type != sequence_tokenizer.sequence_type:
+            raise ValueError(
+                "tokenizer_map.json sequence_type does not match the embedded sequence tokenizer configuration."
+            )
+
+        resolved_train_text_path = (
+            Path(train_text_path)
+            if train_text_path is not None
+            else resolved_tokenizer_map_path.with_name("train.txt")
+        )
+        return cls(
+            train_text_path=resolved_train_text_path,
+            tokenizer_map_path=resolved_tokenizer_map_path,
+            train_text="",
+            examples=(),
+            profile_tokenizer=profile_tokenizer,
+            sequence_tokenizer=sequence_tokenizer,
+            layout=layout,
+            format_version=str(tokenizer_map.get("format", MDC_PROFILE_SEQUENCE_FORMAT)),
+            expected_record_count=int(tokenizer_map.get("record_count", 0)),
+        )
+
     @property
     def record_count(self) -> int:
+        if not self.examples and self.expected_record_count is not None:
+            return self.expected_record_count
         return len(self.examples)
 
     @property
@@ -326,6 +375,87 @@ class MDCProfileSequencePretrainDataset(Dataset[MDCEncodedProfileSequenceExample
 
     def __getitem__(self, index: int) -> MDCEncodedProfileSequenceExample:
         return self._encoded_examples[index]
+
+
+class MDCProfileSequenceStreamingPretrainDataset(IterableDataset[MDCEncodedProfileSequenceExample]):
+    def __init__(
+        self,
+        artifacts: MDCProfileSequencePretrainArtifacts,
+        *,
+        prefix_uri: str | None = None,
+        part_uris: Sequence[str] | None = None,
+        s3_client=None,
+        config: DataConfig | None = None,
+        cache_dir: Path | str | None = None,
+        keep_downloaded_parts: bool = False,
+        shuffle_parts: bool = False,
+        shuffle_records: bool = False,
+        seed: int = 0,
+    ) -> None:
+        self.artifacts = artifacts
+        self.parts = list_minio_text_parts(
+            prefix_uri=prefix_uri,
+            part_uris=part_uris,
+            s3_client=s3_client,
+            config=config,
+            suffixes=(".txt",),
+        )
+        if not self.parts:
+            source = prefix_uri or ", ".join(part_uris or ())
+            raise FileNotFoundError(f"No profile-aware training parts found in {source!r}.")
+
+        self._s3_client = s3_client
+        self.config = config
+        self.cache_dir = Path(cache_dir) if cache_dir is not None else None
+        self.keep_downloaded_parts = bool(keep_downloaded_parts)
+        self.shuffle_parts = bool(shuffle_parts)
+        self.shuffle_records = bool(shuffle_records)
+        self.seed = int(seed)
+
+    def __iter__(self):
+        parts, worker_id = _parts_for_current_worker(self.parts)
+        rng = random.Random(self.seed + worker_id)
+        if self.shuffle_parts:
+            rng.shuffle(parts)
+
+        for part in parts:
+            with downloaded_minio_text_part(
+                part,
+                s3_client=self._s3_client,
+                config=self.config,
+                cache_dir=self.cache_dir,
+                keep_downloaded_parts=self.keep_downloaded_parts,
+            ) as part_path:
+                if self.shuffle_records:
+                    lines = [line for line in part_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+                    rng.shuffle(lines)
+                    for line_number, line in enumerate(lines, start=1):
+                        yield self._encode_line(line, part=part, line_number=line_number)
+                else:
+                    with part_path.open("r", encoding="utf-8") as handle:
+                        for line_number, raw_line in enumerate(handle, start=1):
+                            if not raw_line.strip():
+                                continue
+                            yield self._encode_line(raw_line, part=part, line_number=line_number)
+
+    def _encode_line(
+        self,
+        line: str,
+        *,
+        part: S3TextPart,
+        line_number: int,
+    ) -> MDCEncodedProfileSequenceExample:
+        try:
+            record = parse_profile_sequence_train_line(line)
+        except ValueError as exc:
+            raise ValueError(f"Invalid profile-aware training line in {part.uri}:{line_number}.") from exc
+
+        if record.sequence_type != self.artifacts.sequence_type:
+            raise ValueError(
+                f"Record sequence_type '{record.sequence_type}' in {part.uri}:{line_number} does not match "
+                f"artifact sequence_type '{self.artifacts.sequence_type}'."
+            )
+        return self.artifacts.encode_record(record)
 
 
 class MDCProfileSequenceBatchCollator:
@@ -478,6 +608,55 @@ def create_mdc_profile_sequence_pretrain_dataloader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
+        drop_last=drop_last,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        collate_fn=collator,
+    )
+
+
+def create_streaming_mdc_profile_sequence_pretrain_dataloader(
+    artifacts: MDCProfileSequencePretrainArtifacts,
+    *,
+    prefix_uri: str | None = None,
+    part_uris: Sequence[str] | None = None,
+    s3_client=None,
+    config: DataConfig | None = None,
+    cache_dir: Path | str | None = None,
+    keep_downloaded_parts: bool = False,
+    batch_size: int = 4,
+    drop_last: bool = False,
+    num_workers: int = 0,
+    pin_memory: bool = True,
+    fusion_config: ProfileSequenceFusionConfig | None = None,
+    train_on_prompt: bool = False,
+    include_separator_in_loss: bool = False,
+    shuffle_parts: bool = False,
+    shuffle_records: bool = False,
+    seed: int = 0,
+) -> DataLoader[CausalLMBatch]:
+    dataset = MDCProfileSequenceStreamingPretrainDataset(
+        artifacts,
+        prefix_uri=prefix_uri,
+        part_uris=part_uris,
+        s3_client=s3_client,
+        config=config,
+        cache_dir=cache_dir,
+        keep_downloaded_parts=keep_downloaded_parts,
+        shuffle_parts=shuffle_parts,
+        shuffle_records=shuffle_records,
+        seed=seed,
+    )
+    collator = MDCProfileSequenceBatchCollator(
+        artifacts,
+        fusion_config=fusion_config,
+        train_on_prompt=train_on_prompt,
+        include_separator_in_loss=include_separator_in_loss,
+    )
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
         drop_last=drop_last,
         num_workers=num_workers,
         pin_memory=pin_memory,
@@ -1007,6 +1186,13 @@ def _pad_token_tensors(
         attention_mask[row_index, :sequence_length] = 1
 
     return input_ids, attention_mask
+
+
+def _parts_for_current_worker(parts: Sequence[S3TextPart]) -> tuple[list[S3TextPart], int]:
+    worker_info = get_worker_info()
+    if worker_info is None:
+        return list(parts), 0
+    return list(parts[worker_info.id :: worker_info.num_workers]), int(worker_info.id)
 
 
 def _normalize_sequence_type(sequence_type: str) -> str:

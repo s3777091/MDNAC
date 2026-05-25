@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-
 import torch.nn as nn
-
 from ...linear_attention import MDCGatedDeltaNet
 from ..attention.grouped_query import GroupedQueryAttention
 

@@ -11,7 +11,6 @@ DEFAULT_MDC_LAYER_TYPES = (
     "linear_attention", "linear_attention", "linear_attention", "full_attention",
 )
 
-
 def build_default_mdc_layer_types(n_layers: int) -> tuple[str, ...]:
     if n_layers <= 0:
         raise ValueError("n_layers must be greater than 0.")
@@ -19,7 +18,6 @@ def build_default_mdc_layer_types(n_layers: int) -> tuple[str, ...]:
     base_pattern = ("linear_attention", "linear_attention", "linear_attention", "full_attention")
     repeated = (base_pattern * ((n_layers + len(base_pattern) - 1) // len(base_pattern)))[:n_layers]
     return tuple(repeated)
-
 
 @dataclass(slots=True, frozen=True)
 class MDCModelConfig:
@@ -83,7 +81,6 @@ class MDCModelConfig:
     def with_vocab_size(self, vocab_size: int) -> "MDCModelConfig":
         return replace(self, vocab_size=vocab_size)
 
-
 def build_mdc_default_config(
     vocab_size: int,
     context_length: int,
@@ -101,7 +98,6 @@ def build_mdc_default_config(
         n_kv_groups=2,
         dtype=dtype,
     )
-
 
 def build_mdc_tiny_config(
     vocab_size: int,

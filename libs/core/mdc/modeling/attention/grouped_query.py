@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-
 from ..components.normalization import RMSNorm
 from ..components.rope import apply_rope
-
 
 class GroupedQueryAttention(nn.Module):
     def __init__(

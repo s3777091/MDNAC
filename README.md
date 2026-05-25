@@ -67,7 +67,57 @@ Stage 2 notebooks now use the protein-only flow:
 - `notebooks/stage_2_foundation_model/06_model_evaluation/06_top1_benchmark.ipynb`
 - `notebooks/stage_2_foundation_model/06_model_evaluation/07_plot_metrics.ipynb`
 
-The notebooks call `libs.core` helpers to build or load the protein `SequenceTokenizer`, create causal-LM batches from `train.txt`, instantiate Qwen3.5-style backbone configs for the MDC decoder, save/load resumable `qwen3_5_protein_lm` checkpoints, and benchmark protein next-token accuracy.
+The notebooks call `libs.core` helpers to build or load the protein `SequenceTokenizer`, create causal-LM batches from `train.txt`, instantiate ProGen backbone configs for the MDC decoder, save/load resumable `progen_protein_lm` checkpoints, and benchmark protein next-token accuracy.
+
+For large corpora, use the streaming dataloaders so training reads one text part at a time instead of loading one huge `train.txt` into memory. Local shards named `train_part_1.txt`, `train_part_2.txt`, ... are discovered with `discover_protein_train_text_paths`; MinIO/S3 shards can use the same names under one prefix.
+
+```python
+from libs.core import build_or_load_protein_tokenizer, create_streaming_protein_lm_dataloader
+
+tokenizer_artifact = build_or_load_protein_tokenizer("data/compiled/refseq_bacteria_protein/train.txt")
+train_loader = create_streaming_protein_lm_dataloader(
+    tokenizer_artifact.tokenizer,
+    prefix_uri="s3://microbial-dna-compiler/libs/data/models/datasets/refseq/protein/current/parts",
+    context_length=512,
+    batch_size=8,
+    cache_dir="data/cache/minio-train-parts",
+)
+```
+
+For local parts:
+
+```python
+from libs.core import discover_protein_train_text_paths, create_streaming_protein_lm_dataloader
+
+part_paths = discover_protein_train_text_paths("data/compiled/refseq_bacteria_protein/train.txt")
+train_loader = create_streaming_protein_lm_dataloader(
+    tokenizer_artifact.tokenizer,
+    part_paths=part_paths,
+    context_length=512,
+    batch_size=8,
+)
+```
+
+For profile-aware pretraining, load the small `tokenizer_map.json` locally and stream only the train parts:
+
+```python
+from libs.core import (
+    MDCProfileSequencePretrainArtifacts,
+    create_streaming_mdc_profile_sequence_pretrain_dataloader,
+)
+
+artifacts = MDCProfileSequencePretrainArtifacts.from_tokenizer_map_file(
+    "data/compiled/refseq_bacteria_profile_pretrain/tokenizer_map.json"
+)
+train_loader = create_streaming_mdc_profile_sequence_pretrain_dataloader(
+    artifacts,
+    prefix_uri="s3://microbial-dna-compiler/libs/data/models/datasets/refseq/profile/current/parts",
+    batch_size=8,
+    cache_dir="data/cache/minio-profile-parts",
+)
+```
+
+By default each downloaded part is removed after it has been consumed. Set `keep_downloaded_parts=True` when you want the local cache to persist across epochs.
 
 To pretrain on the same metadata-to-protein shape used by `instruction.jsonl`, build profile-aware pretrain artifacts from the JSONL file:
 

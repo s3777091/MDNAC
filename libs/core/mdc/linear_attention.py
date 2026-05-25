@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import importlib
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 ACT2FN = {"silu": F.silu}
-
 
 def _load_optional_attr(module_name: str, attr_name: str):
     try:
@@ -16,7 +13,6 @@ def _load_optional_attr(module_name: str, attr_name: str):
     except Exception:
         return None
     return getattr(module, attr_name, None)
-
 
 causal_conv1d_fn = _load_optional_attr("causal_conv1d", "causal_conv1d_fn")
 causal_conv1d_update = _load_optional_attr("causal_conv1d", "causal_conv1d_update")
@@ -50,7 +46,6 @@ is_fast_path_available = (
     )
 )
 
-
 def _fast_path_unavailable_reason() -> str:
     reasons: list[str] = []
     if _missing_fast_path_libs:
@@ -58,7 +53,6 @@ def _fast_path_unavailable_reason() -> str:
     if not torch.cuda.is_available():
         reasons.append("CUDA is not available")
     return "; ".join(reasons) or "required kernels could not be loaded"
-
 
 class _NotebookLogger:
     def __init__(self) -> None:
@@ -70,9 +64,7 @@ class _NotebookLogger:
         self._seen.add(msg)
         print(msg)
 
-
 logger = _NotebookLogger()
-
 
 class MDCRMSNormGated(nn.Module):
     def __init__(self, hidden_size: int, eps: float = 1e-6, **kwargs) -> None:
@@ -92,7 +84,6 @@ class MDCRMSNormGated(nn.Module):
         hidden_states = hidden_states * F.silu(gate.to(torch.float32))
         return hidden_states.to(input_dtype)
 
-
 def apply_mask_to_padding_states(
     hidden_states: torch.Tensor,
     attention_mask: torch.Tensor | None,
@@ -101,7 +92,6 @@ def apply_mask_to_padding_states(
         dtype = hidden_states.dtype
         hidden_states = (hidden_states * attention_mask[:, :, None]).to(dtype)
     return hidden_states
-
 
 def torch_causal_conv1d_update(
     hidden_states: torch.Tensor,
@@ -119,11 +109,9 @@ def torch_causal_conv1d_update(
     out = F.silu(out[:, :, -seq_len:])
     return out.to(hidden_states.dtype)
 
-
 def l2norm(x: torch.Tensor, dim: int = -1, eps: float = 1e-6) -> torch.Tensor:
     inv_norm = torch.rsqrt((x * x).sum(dim=dim, keepdim=True) + eps)
     return x * inv_norm
-
 
 def torch_chunk_gated_delta_rule(
     query: torch.Tensor,
