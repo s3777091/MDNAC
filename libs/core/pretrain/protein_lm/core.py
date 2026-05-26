@@ -13,6 +13,13 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_in
 
 from libs.core.interfaces import CausalLMBatch, IGNORE_INDEX
 from libs.core.mdc.config import MDCModelConfig
+from libs.core.pretrain.distributed import (
+    create_mdc_distributed_sampler,
+    normalize_parallel_state_dict,
+    partition_items_for_worker,
+    resolve_mdc_distributed_context,
+    unwrap_mdc_training_model,
+)
 from libs.data.config import DataConfig
 from libs.data.training.streaming import S3TextPart, downloaded_minio_text_part, list_minio_text_parts
 from libs.data.training.tokenizer import SequenceTokenizer
@@ -95,7 +102,11 @@ class ProteinCausalLMStreamingTextDataset(IterableDataset[ProteinCausalLMExample
         stride: int | None = None,
         shuffle_parts: bool = False,
         shuffle_examples: bool = False,
+        shuffle_buffer_size: int = 8192,
         seed: int = 0,
+        distributed: bool | None = None,
+        rank: int | None = None,
+        world_size: int | None = None,
     ) -> None:
         if context_length <= 1:
             raise ValueError("context_length must be greater than 1.")
@@ -138,11 +149,25 @@ class ProteinCausalLMStreamingTextDataset(IterableDataset[ProteinCausalLMExample
         self.keep_downloaded_parts = bool(keep_downloaded_parts)
         self.shuffle_parts = bool(shuffle_parts)
         self.shuffle_examples = bool(shuffle_examples)
+        self.shuffle_buffer_size = int(shuffle_buffer_size)
+        if self.shuffle_buffer_size <= 0:
+            raise ValueError("shuffle_buffer_size must be greater than 0.")
         self.seed = int(seed)
+        resolved_rank, _, resolved_world_size = resolve_mdc_distributed_context(
+            rank=rank,
+            world_size=world_size,
+        )
+        self.use_distributed = bool(distributed) if distributed is not None else resolved_world_size > 1
+        self.rank = resolved_rank if self.use_distributed else 0
+        self.world_size = resolved_world_size if self.use_distributed else 1
 
     def __iter__(self):
-        parts, worker_id = _parts_for_current_worker(self.parts)
-        rng = random.Random(self.seed + worker_id)
+        parts, partition_index = _parts_for_current_worker(
+            self.parts,
+            rank=self.rank,
+            world_size=self.world_size,
+        )
+        rng = random.Random(self.seed + partition_index)
         if self.shuffle_parts:
             rng.shuffle(parts)
 
@@ -156,26 +181,36 @@ class ProteinCausalLMStreamingTextDataset(IterableDataset[ProteinCausalLMExample
                     cache_dir=self.cache_dir,
                     keep_downloaded_parts=self.keep_downloaded_parts,
                 ) as part_path:
-                    text = part_path.read_text(encoding="utf-8")
+                    examples = _iter_causal_lm_examples_from_text_path(
+                        part_path,
+                        self.tokenizer,
+                        context_length=self.context_length,
+                        stride=self.stride,
+                        source=source,
+                    )
+                    if self.shuffle_examples:
+                        examples = _iter_bounded_shuffled_examples(
+                            examples,
+                            rng=rng,
+                            buffer_size=self.shuffle_buffer_size,
+                        )
+                    yield from examples
             else:
                 source = str(part)
-                text = part.read_text(encoding="utf-8")
-
-            if not text.strip():
-                continue
-            _validate_protein_corpus_text(text, source=source)
-            token_ids = self.tokenizer.encode(text)
-            if len(token_ids) < 2:
-                raise ValueError(f"Protein corpus part must encode to at least 2 tokens: {source}")
-
-            examples = _build_causal_lm_examples(
-                token_ids,
-                context_length=self.context_length,
-                stride=self.stride,
-            )
-            if self.shuffle_examples:
-                rng.shuffle(examples)
-            yield from examples
+                examples = _iter_causal_lm_examples_from_text_path(
+                    part,
+                    self.tokenizer,
+                    context_length=self.context_length,
+                    stride=self.stride,
+                    source=source,
+                )
+                if self.shuffle_examples:
+                    examples = _iter_bounded_shuffled_examples(
+                        examples,
+                        rng=rng,
+                        buffer_size=self.shuffle_buffer_size,
+                    )
+                yield from examples
 
 
 class ProteinCausalLMBatchCollator:
@@ -373,6 +408,10 @@ def create_protein_lm_dataloader(
     drop_last: bool = False,
     num_workers: int = 0,
     pin_memory: bool = False,
+    distributed: bool | None = None,
+    rank: int | None = None,
+    world_size: int | None = None,
+    sampler_seed: int = 0,
 ) -> DataLoader[CausalLMBatch]:
     dataset = ProteinCausalLMTextDataset(
         text,
@@ -383,13 +422,23 @@ def create_protein_lm_dataloader(
     collator = ProteinCausalLMBatchCollator(
         pad_token_id=tokenizer.str_to_int["<|pad|>"],
     )
+    sampler = create_mdc_distributed_sampler(
+        dataset,
+        shuffle=shuffle,
+        distributed=distributed,
+        rank=rank,
+        world_size=world_size,
+        seed=sampler_seed,
+        drop_last=drop_last,
+    )
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle if sampler is None else False,
         drop_last=drop_last,
         num_workers=num_workers,
         pin_memory=pin_memory,
+        sampler=sampler,
         collate_fn=collator,
     )
 
@@ -412,7 +461,11 @@ def create_streaming_protein_lm_dataloader(
     pin_memory: bool = False,
     shuffle_parts: bool = False,
     shuffle_examples: bool = False,
+    shuffle_buffer_size: int = 8192,
     seed: int = 0,
+    distributed: bool | None = None,
+    rank: int | None = None,
+    world_size: int | None = None,
 ) -> DataLoader[CausalLMBatch]:
     dataset = ProteinCausalLMStreamingTextDataset(
         tokenizer,
@@ -427,7 +480,11 @@ def create_streaming_protein_lm_dataloader(
         stride=stride,
         shuffle_parts=shuffle_parts,
         shuffle_examples=shuffle_examples,
+        shuffle_buffer_size=shuffle_buffer_size,
         seed=seed,
+        distributed=distributed,
+        rank=rank,
+        world_size=world_size,
     )
     collator = ProteinCausalLMBatchCollator(
         pad_token_id=tokenizer.str_to_int["<|pad|>"],
@@ -471,7 +528,7 @@ def save_protein_pretrain_checkpoint(
     checkpoint: dict[str, Any] = {
         "model_family": PROGEN_PROTEIN_MODEL_FAMILY,
         "backbone_family": PROGEN_BACKBONE_FAMILY,
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": unwrap_mdc_training_model(model).state_dict(),
         "optimizer_state_dict": _optimizer_state_dict(optimizer),
         "model_config": dict(serialized_model_config),
         "tokenizer_map": json.loads(tokenizer.to_json()),
@@ -505,7 +562,10 @@ def load_protein_pretrain_checkpoint(
             "Unsupported protein checkpoint family: "
             f"{checkpoint.get('model_family')!r}"
         )
-    model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
+    unwrap_mdc_training_model(model).load_state_dict(
+        normalize_parallel_state_dict(checkpoint["model_state_dict"]),
+        strict=strict,
+    )
     if optimizer is not None and checkpoint.get("optimizer_state_dict") is not None:
         _load_optimizer_state_dict(optimizer, checkpoint["optimizer_state_dict"])
     return checkpoint
@@ -549,20 +609,21 @@ def generate_protein_text(
     use_cache: bool = True,
     stop_at_endoftext: bool = True,
 ) -> str:
-    model.eval()
+    base_model = unwrap_mdc_training_model(model)
+    base_model.eval()
     token_ids = torch.tensor(tokenizer.encode(prompt), dtype=torch.long, device=device).unsqueeze(0)
     eos_token_id = tokenizer.str_to_int[PROTEIN_END_TOKEN]
-    context_size = int(context_length or getattr(model, "cfg", {}).get("context_length", token_ids.size(1)))
+    context_size = int(context_length or getattr(base_model, "cfg", {}).get("context_length", token_ids.size(1)))
     cache = (
-        _create_generation_cache(model)
+        _create_generation_cache(base_model)
         if use_cache and token_ids.size(1) + max_new_tokens <= context_size
         else None
     )
 
     with torch.no_grad():
         if cache is not None:
-            _reset_generation_cache(model, cache)
-            logits = model(token_ids[:, -context_size:], cache=cache)
+            _reset_generation_cache(base_model, cache)
+            logits = base_model(token_ids[:, -context_size:], cache=cache)
 
             for _ in range(max_new_tokens):
                 next_token = _select_next_token(
@@ -573,10 +634,10 @@ def generate_protein_text(
                 token_ids = torch.cat([token_ids, next_token], dim=1)
                 if stop_at_endoftext and int(next_token.item()) == eos_token_id:
                     break
-                logits = model(next_token, cache=cache)
+                logits = base_model(next_token, cache=cache)
         else:
             for _ in range(max_new_tokens):
-                logits = model(token_ids[:, -context_size:])
+                logits = base_model(token_ids[:, -context_size:])
                 next_token = _select_next_token(
                     logits[:, -1, :],
                     temperature=temperature,
@@ -643,29 +704,97 @@ def _build_causal_lm_examples(
     context_length: int,
     stride: int,
 ) -> list[ProteinCausalLMExample]:
+    return list(
+        _iter_causal_lm_examples(
+            token_ids,
+            context_length=context_length,
+            stride=stride,
+        )
+    )
+
+
+def _iter_causal_lm_examples(
+    token_ids: Sequence[int],
+    *,
+    context_length: int,
+    stride: int,
+):
     if len(token_ids) <= context_length + 1:
-        return [
-            ProteinCausalLMExample(
-                input_ids=torch.tensor(token_ids[:-1], dtype=torch.long),
-                labels=torch.tensor(token_ids[1:], dtype=torch.long),
-            )
-        ]
+        yield ProteinCausalLMExample(
+            input_ids=torch.tensor(token_ids[:-1], dtype=torch.long),
+            labels=torch.tensor(token_ids[1:], dtype=torch.long),
+        )
+        return
 
     last_start = len(token_ids) - context_length - 1
-    starts = list(range(0, last_start + 1, stride))
-    if starts[-1] != last_start:
-        starts.append(last_start)
-
-    examples: list[ProteinCausalLMExample] = []
-    for start in starts:
+    start = 0
+    while start <= last_start:
         end = start + context_length
-        examples.append(
-            ProteinCausalLMExample(
-                input_ids=torch.tensor(token_ids[start:end], dtype=torch.long),
-                labels=torch.tensor(token_ids[start + 1 : end + 1], dtype=torch.long),
-            )
+        yield ProteinCausalLMExample(
+            input_ids=torch.tensor(token_ids[start:end], dtype=torch.long),
+            labels=torch.tensor(token_ids[start + 1 : end + 1], dtype=torch.long),
         )
-    return examples
+        start += stride
+
+    final_aligned_start = ((last_start // stride) * stride)
+    if final_aligned_start != last_start:
+        end = last_start + context_length
+        yield ProteinCausalLMExample(
+            input_ids=torch.tensor(token_ids[last_start:end], dtype=torch.long),
+            labels=torch.tensor(token_ids[last_start + 1 : end + 1], dtype=torch.long),
+        )
+
+
+def _iter_causal_lm_examples_from_text_path(
+    path: Path,
+    tokenizer: SequenceTokenizer,
+    *,
+    context_length: int,
+    stride: int,
+    source: str,
+):
+    saw_text = False
+    with Path(path).open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+
+            saw_text = True
+            text = line if line.endswith("\n") else line + "\n"
+            line_source = f"{source}:{line_number}"
+            _validate_protein_corpus_text(text, source=line_source)
+            token_ids = tokenizer.encode(text)
+            if len(token_ids) < 2:
+                raise ValueError(f"Protein corpus line must encode to at least 2 tokens: {line_source}")
+
+            yield from _iter_causal_lm_examples(
+                token_ids,
+                context_length=context_length,
+                stride=stride,
+            )
+
+    if not saw_text:
+        return
+
+
+def _iter_bounded_shuffled_examples(
+    examples,
+    *,
+    rng: random.Random,
+    buffer_size: int,
+):
+    buffer: list[ProteinCausalLMExample] = []
+    for example in examples:
+        buffer.append(example)
+        if len(buffer) >= buffer_size:
+            index = rng.randrange(len(buffer))
+            buffer[index], buffer[-1] = buffer[-1], buffer[index]
+            yield buffer.pop()
+
+    while buffer:
+        index = rng.randrange(len(buffer))
+        buffer[index], buffer[-1] = buffer[-1], buffer[index]
+        yield buffer.pop()
 
 
 def _validate_protein_corpus_text(text: str, *, source: str) -> None:
@@ -675,11 +804,22 @@ def _validate_protein_corpus_text(text: str, *, source: str) -> None:
         raise ValueError(f"Protein corpus part must contain {PROTEIN_END_TOKEN}: {source}")
 
 
-def _parts_for_current_worker(parts: Sequence[S3TextPart | Path]) -> tuple[list[S3TextPart | Path], int]:
+def _parts_for_current_worker(
+    parts: Sequence[S3TextPart | Path],
+    *,
+    rank: int = 0,
+    world_size: int = 1,
+) -> tuple[list[S3TextPart | Path], int]:
     worker_info = get_worker_info()
-    if worker_info is None:
-        return list(parts), 0
-    return list(parts[worker_info.id :: worker_info.num_workers]), int(worker_info.id)
+    worker_id = 0 if worker_info is None else int(worker_info.id)
+    num_workers = 1 if worker_info is None else int(worker_info.num_workers)
+    return partition_items_for_worker(
+        parts,
+        rank=rank,
+        world_size=world_size,
+        worker_id=worker_id,
+        num_workers=num_workers,
+    )
 
 
 def _natural_path_sort_key(path: Path) -> tuple[object, ...]:

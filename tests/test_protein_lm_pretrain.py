@@ -268,6 +268,24 @@ class ProteinLMPretrainTests(unittest.TestCase):
         self.assertNotIn(id(model[0].weight), muon_param_ids)
         self.assertIn(id(model[0].weight), adamw_param_ids)
 
+    def test_create_muon_optimizers_requires_native_torch_muon(self) -> None:
+        original_muon = getattr(torch.optim, "Muon", None)
+        if original_muon is not None:
+            delattr(torch.optim, "Muon")
+        try:
+            model = torch.nn.Sequential(
+                torch.nn.Embedding(8, 4),
+                torch.nn.Linear(4, 4),
+            )
+            with self.assertRaisesRegex(RuntimeError, "torch.optim.Muon is required"):
+                create_muon_optimizers(
+                    model,
+                    adamw_learning_rate=1e-3,
+                    weight_decay=0.01,
+                )
+        finally:
+            if original_muon is not None:
+                torch.optim.Muon = original_muon
 
 if __name__ == "__main__":
     unittest.main()

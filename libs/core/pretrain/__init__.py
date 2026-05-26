@@ -61,6 +61,14 @@ from .training import (
     evaluate_mdc_causal_lm_batch_loss,
     run_mdc_causal_lm_batch_epoch,
 )
+from .distributed import (
+    MDCTrainingRuntime,
+    cleanup_mdc_distributed_training,
+    prepare_mdc_training_runtime,
+    resolve_mdc_training_device,
+    set_mdc_data_loader_epoch,
+    unwrap_mdc_training_model,
+)
 
 __all__ = [
     "DEFAULT_PROGEN_MODEL_NAME",
@@ -97,6 +105,7 @@ __all__ = [
     "build_progen_config",
     "count_trainable_parameters",
     "compute_mdc_causal_lm_loss",
+    "cleanup_mdc_distributed_training",
     "create_moon_optimizers",
     "create_muon_optimizers",
     "create_mdc_profile_sequence_pretrain_dataloader",
@@ -113,11 +122,16 @@ __all__ = [
     "load_protein_corpus_text",
     "load_protein_corpus_text_parts",
     "load_protein_pretrain_checkpoint",
+    "MDCTrainingRuntime",
     "parse_profile_sequence_train_line",
+    "prepare_mdc_training_runtime",
+    "resolve_mdc_training_device",
     "run_mdc_causal_lm_batch_epoch",
     "save_mdc_profile_sequence_pretrain_from_instruction_jsonl",
     "save_mdc_profile_sequence_pretrain_from_preparation_sessions",
     "save_mdc_profile_sequence_pretrain_artifacts",
     "save_protein_pretrain_checkpoint",
+    "set_mdc_data_loader_epoch",
     "split_protein_corpus_text",
+    "unwrap_mdc_training_model",
 ]

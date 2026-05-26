@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from libs.core.interfaces import CausalLMBatch
+from .distributed import set_mdc_data_loader_epoch, unwrap_mdc_training_model
 
 
 def compute_mdc_causal_lm_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
@@ -21,7 +22,10 @@ def create_muon_optimizers(
 ) -> list[torch.optim.Optimizer]:
     muon_cls = getattr(torch.optim, "Muon", None)
     if muon_cls is None:
-        raise RuntimeError("torch.optim.Muon is not available in this PyTorch build.")
+        raise RuntimeError(
+            "torch.optim.Muon is required for optimizer.type=muon. "
+            "Install a PyTorch build that includes native Muon support."
+        )
 
     embedding_param_names: set[str] = set()
     for module_name, module in model.named_modules():
@@ -104,10 +108,14 @@ def run_mdc_causal_lm_batch_epoch(
     *,
     device: torch.device | str,
     grad_clip_norm: float | None = None,
+    epoch: int | None = None,
 ) -> float:
     model_or_app.train()
     optimizers = _as_optimizer_list(optimizer)
     losses: list[float] = []
+
+    if epoch is not None:
+        set_mdc_data_loader_epoch(data_loader, epoch)
 
     for batch in data_loader:
         resolved_batch = _move_causal_lm_batch_to_device(batch, device=device)
@@ -146,9 +154,11 @@ def _forward_causal_lm_batch(
     model_or_app,
     batch: CausalLMBatch,
 ) -> torch.Tensor:
+    if unwrap_mdc_training_model(model_or_app) is not model_or_app:
+        return model_or_app(batch.input_ids, batch.attention_mask)
     if hasattr(model_or_app, "forward_causal_lm_batch"):
         return model_or_app.forward_causal_lm_batch(batch)
-    return model_or_app(batch.input_ids, attn_mask=batch.attention_mask)
+    return model_or_app(batch.input_ids, batch.attention_mask)
 
 
 def _as_optimizer_list(

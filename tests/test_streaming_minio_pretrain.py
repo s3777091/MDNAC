@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -175,6 +176,33 @@ class StreamingMinioPretrainTests(unittest.TestCase):
         )
         self.assertIn("<|protein|>GLYSERQ<|endoftext|>", load_protein_corpus_text_parts(part_paths))
         self.assertEqual(2, batch.input_ids.size(0))
+
+    def test_streaming_local_parts_do_not_read_entire_part_into_memory(self) -> None:
+        corpus_dir = self.root / "line-streamed-parts"
+        corpus_dir.mkdir(parents=True, exist_ok=True)
+        part_path = corpus_dir / "train_part_1.txt"
+        part_path.write_text(
+            (
+                "<|protein|>MPEPTIDE<|endoftext|>\n"
+                "<|protein|>GLYSERQ<|endoftext|>\n"
+            ),
+            encoding="utf-8",
+        )
+        tokenizer = build_or_load_protein_tokenizer(part_path, vocab_size=64).tokenizer
+        data_loader = create_streaming_protein_lm_dataloader(
+            tokenizer,
+            part_paths=(part_path,),
+            context_length=12,
+            stride=6,
+            batch_size=1,
+            pin_memory=False,
+        )
+
+        with patch.object(Path, "read_text", side_effect=AssertionError("read_text should not be used")):
+            batch = next(iter(data_loader))
+
+        self.assertEqual(1, batch.input_ids.size(0))
+        self.assertTrue(torch.any(batch.labels != IGNORE_INDEX))
 
     def test_streams_profile_aware_batches_from_minio_parts(self) -> None:
         records = [

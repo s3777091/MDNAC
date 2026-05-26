@@ -67,6 +67,8 @@ Stage 2 notebooks now use the protein-only flow:
 - `notebooks/stage_2_foundation_model/06_model_evaluation/06_top1_benchmark.ipynb`
 - `notebooks/stage_2_foundation_model/06_model_evaluation/07_plot_metrics.ipynb`
 
+The pretrain and resume notebooks now load shared paths, model settings, optimizer choice (`adamw` or `muon`), multi-GPU options, and optional MinIO overrides from `train.yaml` at the repo root. Keep sensitive MinIO credentials in `.env` or environment variables and only put non-secret endpoint or bucket overrides in `train.yaml` when needed.
+
 The notebooks call `libs.core` helpers to build or load the protein `SequenceTokenizer`, create causal-LM batches from `train.txt`, instantiate ProGen backbone configs for the MDC decoder, save/load resumable `progen_protein_lm` checkpoints, and benchmark protein next-token accuracy.
 
 For large corpora, use the streaming dataloaders so training reads one text part at a time instead of loading one huge `train.txt` into memory. Local shards named `train_part_1.txt`, `train_part_2.txt`, ... are discovered with `discover_protein_train_text_paths`; MinIO/S3 shards can use the same names under one prefix.

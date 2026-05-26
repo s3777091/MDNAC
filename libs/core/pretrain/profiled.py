@@ -11,6 +11,11 @@ from torch.utils.data import DataLoader, Dataset, IterableDataset, get_worker_in
 
 from libs.core.fusion import FusedVocabularyLayout, ProfileSequenceBatchBuilder, ProfileSequenceFusionConfig
 from libs.core.interfaces import CausalLMBatch, FusedProfileSequenceBatch
+from libs.core.pretrain.distributed import (
+    create_mdc_distributed_sampler,
+    partition_items_for_worker,
+    resolve_mdc_distributed_context,
+)
 from libs.data.config import DataConfig
 from libs.data.entities import PreparationSessionArtifact
 from libs.data.training.streaming import S3TextPart, downloaded_minio_text_part, list_minio_text_parts
@@ -391,6 +396,9 @@ class MDCProfileSequenceStreamingPretrainDataset(IterableDataset[MDCEncodedProfi
         shuffle_parts: bool = False,
         shuffle_records: bool = False,
         seed: int = 0,
+        distributed: bool | None = None,
+        rank: int | None = None,
+        world_size: int | None = None,
     ) -> None:
         self.artifacts = artifacts
         self.parts = list_minio_text_parts(
@@ -411,10 +419,21 @@ class MDCProfileSequenceStreamingPretrainDataset(IterableDataset[MDCEncodedProfi
         self.shuffle_parts = bool(shuffle_parts)
         self.shuffle_records = bool(shuffle_records)
         self.seed = int(seed)
+        resolved_rank, _, resolved_world_size = resolve_mdc_distributed_context(
+            rank=rank,
+            world_size=world_size,
+        )
+        self.use_distributed = bool(distributed) if distributed is not None else resolved_world_size > 1
+        self.rank = resolved_rank if self.use_distributed else 0
+        self.world_size = resolved_world_size if self.use_distributed else 1
 
     def __iter__(self):
-        parts, worker_id = _parts_for_current_worker(self.parts)
-        rng = random.Random(self.seed + worker_id)
+        parts, partition_index = _parts_for_current_worker(
+            self.parts,
+            rank=self.rank,
+            world_size=self.world_size,
+        )
+        rng = random.Random(self.seed + partition_index)
         if self.shuffle_parts:
             rng.shuffle(parts)
 
@@ -597,6 +616,10 @@ def create_mdc_profile_sequence_pretrain_dataloader(
     fusion_config: ProfileSequenceFusionConfig | None = None,
     train_on_prompt: bool = False,
     include_separator_in_loss: bool = False,
+    distributed: bool | None = None,
+    rank: int | None = None,
+    world_size: int | None = None,
+    sampler_seed: int = 0,
 ) -> DataLoader[CausalLMBatch]:
     collator = MDCProfileSequenceBatchCollator(
         dataset.artifacts,
@@ -604,13 +627,23 @@ def create_mdc_profile_sequence_pretrain_dataloader(
         train_on_prompt=train_on_prompt,
         include_separator_in_loss=include_separator_in_loss,
     )
+    sampler = create_mdc_distributed_sampler(
+        dataset,
+        shuffle=shuffle,
+        distributed=distributed,
+        rank=rank,
+        world_size=world_size,
+        seed=sampler_seed,
+        drop_last=drop_last,
+    )
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle if sampler is None else False,
         drop_last=drop_last,
         num_workers=num_workers,
         pin_memory=pin_memory,
+        sampler=sampler,
         collate_fn=collator,
     )
 
@@ -634,6 +667,9 @@ def create_streaming_mdc_profile_sequence_pretrain_dataloader(
     shuffle_parts: bool = False,
     shuffle_records: bool = False,
     seed: int = 0,
+    distributed: bool | None = None,
+    rank: int | None = None,
+    world_size: int | None = None,
 ) -> DataLoader[CausalLMBatch]:
     dataset = MDCProfileSequenceStreamingPretrainDataset(
         artifacts,
@@ -646,6 +682,9 @@ def create_streaming_mdc_profile_sequence_pretrain_dataloader(
         shuffle_parts=shuffle_parts,
         shuffle_records=shuffle_records,
         seed=seed,
+        distributed=distributed,
+        rank=rank,
+        world_size=world_size,
     )
     collator = MDCProfileSequenceBatchCollator(
         artifacts,
@@ -1188,11 +1227,22 @@ def _pad_token_tensors(
     return input_ids, attention_mask
 
 
-def _parts_for_current_worker(parts: Sequence[S3TextPart]) -> tuple[list[S3TextPart], int]:
+def _parts_for_current_worker(
+    parts: Sequence[S3TextPart],
+    *,
+    rank: int = 0,
+    world_size: int = 1,
+) -> tuple[list[S3TextPart], int]:
     worker_info = get_worker_info()
-    if worker_info is None:
-        return list(parts), 0
-    return list(parts[worker_info.id :: worker_info.num_workers]), int(worker_info.id)
+    worker_id = 0 if worker_info is None else int(worker_info.id)
+    num_workers = 1 if worker_info is None else int(worker_info.num_workers)
+    return partition_items_for_worker(
+        parts,
+        rank=rank,
+        world_size=world_size,
+        worker_id=worker_id,
+        num_workers=num_workers,
+    )
 
 
 def _normalize_sequence_type(sequence_type: str) -> str:
