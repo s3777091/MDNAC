@@ -14,7 +14,6 @@ DATASET_FILE_NAMES = {
     "txt": "train.txt",
     "tokenizer_map": "tokenizer_map.json",
 }
-DATASET_BUNDLE_FILENAMES = tuple(DATASET_FILE_NAMES.values())
 
 CATALOG_FIELDS = (
     "source_name",

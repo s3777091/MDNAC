@@ -16,7 +16,3 @@ class SourceConfigurationError(DataIngestionError):
 
 class StorageOperationError(DataIngestionError):
     """Raised when dataset storage backends fail."""
-
-
-class OptionalDependencyError(DataIngestionError):
-    """Raised when an optional package is required but missing."""

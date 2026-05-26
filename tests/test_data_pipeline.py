@@ -288,7 +288,7 @@ class DataConfigTests(unittest.TestCase):
         self.env_path = Path("tests/artifacts/config.test.env")
         self.config_path.parent.mkdir(parents=True, exist_ok=True)
         self.config_path.write_text("storage_mode: local\ndata_root: data-store\ndefault_batch_size: 7\nminio:\n  endpoint_url: http://minio.internal:9000\n  secure: false\n", encoding="utf-8")
-        self.env_path.write_text("MICROBIAL_DATA_MINIO_ACCESS_KEY=test-access\nMICROBIAL_DATA_MINIO_SECRET_KEY=test-secret\nMINIO_ROOT_USER=test-access\nMINIO_ROOT_PASSWORD=test-secret\n", encoding="utf-8")
+        self.env_path.write_text("MICROBIAL_DATA_MINIO_ACCESS_KEY=test-access\nMICROBIAL_DATA_MINIO_SECRET_KEY=test-secret\nMICROBIAL_DATA_MINIO_PREFIX=custom/root/\nMINIO_ROOT_USER=test-access\nMINIO_ROOT_PASSWORD=test-secret\n", encoding="utf-8")
 
     def tearDown(self):
         if self.config_path.exists():
@@ -304,6 +304,7 @@ class DataConfigTests(unittest.TestCase):
         self.assertEqual(self.config_path.parent / "data-store", config.data_root)
         self.assertEqual(7, config.default_batch_size)
         self.assertEqual("http://minio.internal:9000", config.minio.endpoint_url)
+        self.assertEqual("custom/root", config.minio.root_prefix)
         self.assertFalse(config.minio.secure)
 
 

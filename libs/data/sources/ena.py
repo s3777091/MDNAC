@@ -257,15 +257,6 @@ class EnaSequenceSource(SequenceSource):
                 time.sleep(delay)
         return []
 
-    def _portal_page_size(self, effective_limit: int | None, current_count: int) -> int:
-        if effective_limit is None:
-            return self._DEFAULT_PORTAL_PAGE_SIZE
-
-        remaining = effective_limit - current_count
-        if remaining <= 0:
-            return 0
-        return min(remaining, self._DEFAULT_PORTAL_PAGE_SIZE)
-
     def _uses_coding_records(self) -> bool:
         return self._result_type == self._CODING_RESULT_TYPE
 

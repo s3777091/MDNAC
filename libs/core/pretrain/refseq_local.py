@@ -660,10 +660,6 @@ def _paths_have_same_content(left_path: Path, right_path: Path, *, chunk_size: i
                 return True
 
 
-def _render_train_text(records: list[RefseqCompiledRecord]) -> str:
-    return "\n".join(record.sequence_train_line for record in records) + "\n"
-
-
 def _render_tokenizer_map_text_from_train_path(
     train_text_path: Path,
     *,
@@ -751,10 +747,6 @@ def _append_instruction_jsonl_artifact(
             workers=workers,
         ):
             handle.write(chunk_text)
-
-
-def _count_nonempty_lines(text: str) -> int:
-    return sum(1 for line in text.splitlines() if line.strip())
 
 
 def _count_instruction_metadata(
@@ -1000,17 +992,6 @@ def _build_instruction_jsonl_chunk(
     return "\n".join(lines) + "\n", len(lines)
 
 
-def _dedupe_records_by_sequence(records: list[RefseqCompiledRecord]) -> list[RefseqCompiledRecord]:
-    ordered: list[RefseqCompiledRecord] = []
-    seen: set[str] = set()
-    for record in records:
-        if record.sequence_hash in seen:
-            continue
-        ordered.append(record)
-        seen.add(record.sequence_hash)
-    return ordered
-
-
 def _content_hash_for_record(
     *,
     accession: str,
@@ -1030,32 +1011,6 @@ def _content_hash_for_record(
             "metadata": metadata,
         }
     )
-
-
-def _infer_record_origin(metadata: dict[str, str]) -> str:
-    if "fasta_header" not in metadata:
-        return "gpff_only"
-
-    if any(
-        field in metadata
-        for field in (
-            "keywords",
-            "dbsource",
-            "taxonomy",
-            "product",
-            "note",
-            "coded_by",
-            "gene",
-            "gene_synonym",
-            "chromosome",
-            "plasmid",
-            "organelle",
-            "segment",
-            "host",
-        )
-    ):
-        return "paired"
-    return "faa_only"
 
 
 def _hash_payload(payload: dict[str, object]) -> str:
@@ -1527,23 +1482,9 @@ def _accession_version_number(value: str) -> int:
     return -1
 
 
-def _coerce_optional_int(value: object) -> int | None:
-    if value is None or value == "":
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _clean_field_text(value: str) -> str:
     cleaned = value.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
     return " ".join(cleaned.split())
-
-
-def _clean_optional_text(value: object) -> str | None:
-    cleaned = _clean_field_text(str(value))
-    return cleaned or None
 
 
 def _strip_terminal_period(value: str) -> str:
@@ -1555,12 +1496,6 @@ def _merge_metadata_if_present(metadata: dict[str, str], key: str, value: str) -
     cleaned = _clean_field_text(value)
     if cleaned:
         metadata[key] = cleaned
-
-
-def _tuple_of_strings(values: object) -> tuple[str, ...]:
-    if not isinstance(values, (list, tuple)):
-        return ()
-    return tuple(_dedupe_preserve_order(str(value) for value in values))
 
 
 def _dedupe_preserve_order(values) -> list[str]:

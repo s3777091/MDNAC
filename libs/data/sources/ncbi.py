@@ -7,14 +7,14 @@ import time
 from dataclasses import dataclass
 
 from libs.data.contracts import HttpTransport, SequenceSource
+from libs.data.entities import FetchRequest, SequenceRecord
+from libs.data.utilities.exceptions import DataNotFoundError, SourceConfigurationError
+from libs.data.utilities.parsers import parse_fasta
 
 logger = logging.getLogger(__name__)
 
 _NCBI_EMPTY_RESPONSE_MAX_RETRIES = 3
 _NCBI_EMPTY_RESPONSE_BACKOFF_BASE = 5.0
-from libs.data.entities import FetchRequest, SequenceRecord
-from libs.data.utilities.exceptions import DataNotFoundError, SourceConfigurationError
-from libs.data.utilities.parsers import parse_fasta
 
 
 @dataclass(slots=True, frozen=True)
@@ -297,42 +297,6 @@ class NcbiSequenceSource(SequenceSource):
                 parsed[caption] = entry
 
         return parsed
-
-    def _removed_cds_dna_mapping(
-        self,
-        accessions: tuple[str, ...],
-        batch_size: int = 200,
-    ) -> dict[str, str]:
-        del accessions, batch_size
-        raise ValueError("NCBI CDS DNA back-mapping has been removed from the protein-only pipeline.")
-
-    def _extract_protein_accession_from_cds_header(self, header: str) -> str:
-        """Extract the protein accession from a CDS FASTA header.
-
-        NCBI fasta_cds_na headers look like:
-          >lcl|WP_123456.1_cds_NZ_ABC123.1_1 [protein=hypothetical protein] [protein_id=WP_123456.1] ...
-          >lcl|ABC12345.1_cds_1 [protein_id=ABC12345.1] ...
-        """
-        # Try [protein_id=...] first — most reliable
-        for part in header.split("["):
-            if part.startswith("protein_id="):
-                raw_accession = part.split("]")[0][len("protein_id="):].strip()
-                canonical = self._canonical_accession(raw_accession)
-                if canonical:
-                    return canonical
-
-        # Fallback: parse lcl|<accession>_cds_
-        first_token = header.split()[0] if header else ""
-        if first_token.startswith("lcl|"):
-            body = first_token[4:]
-            cds_pos = body.find("_cds_")
-            if cds_pos == -1:
-                cds_pos = body.find("_cds")
-            if cds_pos > 0:
-                raw_accession = body[:cds_pos]
-                return self._canonical_accession(raw_accession)
-
-        return ""
 
     def _fetch_fasta_entries(self, accessions: tuple[str, ...]):
         params = self._base_params()

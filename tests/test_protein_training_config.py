@@ -4,6 +4,7 @@ import os
 import shutil
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -30,6 +31,7 @@ class ProteinTrainingConfigTests(unittest.TestCase):
         self.env_keys = (
             "MICROBIAL_DATA_MINIO_ACCESS_KEY",
             "MICROBIAL_DATA_MINIO_SECRET_KEY",
+            "MICROBIAL_DATA_MINIO_PREFIX",
         )
         self.original_env = {key: os.environ.get(key) for key in self.env_keys}
         for key in self.env_keys:
@@ -51,6 +53,7 @@ class ProteinTrainingConfigTests(unittest.TestCase):
             (
                 "MICROBIAL_DATA_MINIO_ACCESS_KEY=env-access\n"
                 "MICROBIAL_DATA_MINIO_SECRET_KEY=env-secret\n"
+                "MICROBIAL_DATA_MINIO_PREFIX=protein/root\n"
             ),
             encoding="utf-8",
         )
@@ -109,6 +112,24 @@ class ProteinTrainingConfigTests(unittest.TestCase):
         self.assertEqual(64, config["model"]["context_length"])
         self.assertFalse(config["resume"]["restore_optimizer_state"])
 
+    def test_resolves_auto_booleans_to_runtime_defaults(self) -> None:
+        train_config_path = self.root / "train.yaml"
+        train_config_path.write_text(
+            train_config_path.read_text(encoding="utf-8")
+            .replace("  pin_memory: false\n", "  pin_memory: auto\n")
+            .replace("  fused: false\n", "  fused: auto\n"),
+            encoding="utf-8",
+        )
+
+        with patch.object(torch.cuda, "is_available", return_value=False):
+            cpu_config = load_protein_training_config(self.root)
+        self.assertFalse(cpu_config["data"]["pin_memory"])
+        self.assertTrue(cpu_config["optimizer"]["fused"])
+
+        with patch.object(torch.cuda, "is_available", return_value=True):
+            cuda_config = load_protein_training_config(self.root)
+        self.assertTrue(cuda_config["data"]["pin_memory"])
+
     def test_builds_minio_data_config_from_train_yaml_overrides(self) -> None:
         config = load_protein_training_config(self.root)
 
@@ -120,6 +141,7 @@ class ProteinTrainingConfigTests(unittest.TestCase):
         self.assertEqual("env-access", data_config.minio.access_key)
         self.assertEqual("env-secret", data_config.minio.secret_key)
         self.assertEqual("yaml-bucket", data_config.minio.bucket_name)
+        self.assertEqual("protein/root", data_config.minio.root_prefix)
         self.assertFalse(data_config.minio.secure)
 
     def test_creates_muon_optimizer_and_reapplies_yaml_hyperparameters(self) -> None:

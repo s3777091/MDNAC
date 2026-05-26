@@ -26,3 +26,6 @@ models/**/*.onnx
 models/**/*.gguf
 models/**/checkpoints/
 models/**/artifacts/
+
+instruction.jsonl
+train.txt

@@ -3,10 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Sequence
 
+import boto3
+
 from libs.data.config import DataConfig
 from libs.data.contracts import DatasetRepository
 from libs.data.entities import DatasetArtifact, DeleteResult, FetchRequest, ManagedDataset, SequenceRecord
-from libs.data.utilities.exceptions import DataNotFoundError, DatasetNotFoundError, OptionalDependencyError
+from libs.data.utilities.exceptions import DataNotFoundError, DatasetNotFoundError
 from libs.data.utilities.storage import (
     build_prebuilt_dataset_bundle,
     build_dataset_bundle,
@@ -143,13 +145,6 @@ class MinioDatasetRepository(DatasetRepository):
         )
 
     def _build_client(self):
-        try:
-            import boto3
-        except ModuleNotFoundError as exc:
-            raise OptionalDependencyError(
-                "MinIO storage mode requires boto3. Install it before using MinIO storage."
-            ) from exc
-
         return boto3.client(
             "s3",
             endpoint_url=self._config.minio.normalized_endpoint_url,

@@ -2,7 +2,6 @@ from libs.data.utilities.exceptions import (
     DataIngestionError,
     DataNotFoundError,
     DatasetNotFoundError,
-    OptionalDependencyError,
     SourceConfigurationError,
     StorageOperationError,
 )
@@ -12,7 +11,6 @@ __all__ = [
     "DataIngestionError",
     "DataNotFoundError",
     "DatasetNotFoundError",
-    "OptionalDependencyError",
     "SourceConfigurationError",
     "StorageOperationError",
     "UrllibHttpTransport",

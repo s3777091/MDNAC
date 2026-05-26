@@ -205,6 +205,7 @@ def build_protein_training_data_config(
             bucket_name=str(explicit_overrides.get("bucket_name", base_minio.bucket_name)),
             region_name=_optional_string(explicit_overrides.get("region_name")) or base_minio.region_name,
             secure=base_minio.secure if explicit_overrides.get("secure") is None else bool(explicit_overrides["secure"]),
+            root_prefix=base_minio.root_prefix,
         ),
     )
 
@@ -349,11 +350,11 @@ def _optional_string(value: Any) -> str | None:
     return text or None
 
 
-def _resolve_auto_bool(value: Any, *, default: bool) -> str | bool:
+def _resolve_auto_bool(value: Any, *, default: bool) -> bool:
     if value is None:
-        return "auto"
+        return default
     if isinstance(value, str) and value.strip().lower() == "auto":
-        return "auto"
+        return default
     return _bool_value(value, default)
 
 
@@ -406,8 +407,6 @@ def _should_use_fused_adamw(fused_value: Any, device: torch.device) -> bool:
         return False
 
     resolved_fused = _resolve_auto_bool(fused_value, default=True)
-    if resolved_fused == "auto":
-        return "fused" in inspect.signature(torch.optim.AdamW).parameters
     return bool(resolved_fused) and "fused" in inspect.signature(torch.optim.AdamW).parameters
 
 

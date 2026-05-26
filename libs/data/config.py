@@ -104,6 +104,11 @@ def _config_value(
     return default
 
 
+def _clean_minio_root_prefix(value: object) -> str:
+    cleaned = str(value or MINIO_ROOT_PREFIX).strip().strip("/")
+    return cleaned or MINIO_ROOT_PREFIX
+
+
 @dataclass(slots=True, frozen=True)
 class MinioConfig:
     endpoint_url: str = field(default_factory=lambda: os.getenv("MICROBIAL_DATA_MINIO_ENDPOINT", "http://localhost:9000"))
@@ -112,6 +117,7 @@ class MinioConfig:
     bucket_name: str = field(default_factory=lambda: os.getenv("MICROBIAL_DATA_MINIO_BUCKET", "microbial-dna-compiler"))
     region_name: str | None = field(default_factory=lambda: os.getenv("MICROBIAL_DATA_MINIO_REGION") or None)
     secure: bool = field(default_factory=lambda: _env_flag("MICROBIAL_DATA_MINIO_SECURE", True))
+    root_prefix: str = field(default_factory=lambda: _clean_minio_root_prefix(os.getenv("MICROBIAL_DATA_MINIO_PREFIX")))
 
     @property
     def normalized_endpoint_url(self) -> str:
@@ -119,10 +125,6 @@ class MinioConfig:
             return self.endpoint_url
         scheme = "https" if self.secure else "http"
         return f"{scheme}://{self.endpoint_url}"
-
-    @property
-    def root_prefix(self) -> str:
-        return MINIO_ROOT_PREFIX
 
 
 @dataclass(slots=True, frozen=True)
@@ -209,6 +211,14 @@ class DataConfig:
                     _env_flag("MICROBIAL_DATA_MINIO_SECURE", True),
                 ),
                 True,
+            ),
+            root_prefix=_clean_minio_root_prefix(
+                _config_value(
+                    config_mapping,
+                    "MICROBIAL_DATA_MINIO_PREFIX",
+                    ("minio", "root_prefix"),
+                    os.getenv("MICROBIAL_DATA_MINIO_PREFIX", MINIO_ROOT_PREFIX),
+                )
             ),
         )
 

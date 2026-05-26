@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import hashlib
 import re
 import shutil
@@ -8,10 +10,15 @@ from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from urllib import error as urllib_error
 from urllib.parse import urlparse
+from urllib import request as urllib_request
+
+import boto3
+import botocore.auth as botocore_auth
+from botocore.config import Config
 
 from libs.data.config import DATA_CONFIG, DataConfig
-from libs.data.utilities.exceptions import OptionalDependencyError
 
 
 DEFAULT_TEXT_PART_SUFFIXES = (".txt", ".jsonl")
@@ -41,12 +48,10 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
 
 def build_minio_s3_client(config: DataConfig | None = None):
     resolved_config = config or DATA_CONFIG
-    try:
-        import boto3
-    except ModuleNotFoundError as exc:
-        raise OptionalDependencyError(
-            "Streaming from MinIO requires boto3. Install it with `uv sync --extra minio`."
-        ) from exc
+    _apply_s3_endpoint_clock_offset(
+        resolved_config.minio.normalized_endpoint_url,
+        botocore_auth=botocore_auth,
+    )
 
     return boto3.client(
         "s3",
@@ -55,7 +60,39 @@ def build_minio_s3_client(config: DataConfig | None = None):
         aws_secret_access_key=resolved_config.minio.secret_key,
         region_name=resolved_config.minio.region_name,
         use_ssl=resolved_config.minio.secure,
+        config=Config(
+            s3={"addressing_style": "path"},
+            retries={"max_attempts": 10, "mode": "standard"},
+        ),
     )
+
+
+def _apply_s3_endpoint_clock_offset(endpoint_url: str, *, botocore_auth) -> None:
+    try:
+        request = urllib_request.Request(endpoint_url, method="GET")
+        try:
+            response = urllib_request.urlopen(request, timeout=20)
+            date_header = response.headers.get("Date")
+        except urllib_error.HTTPError as exc:
+            date_header = exc.headers.get("Date")
+        if not date_header:
+            return
+
+        server_time = parsedate_to_datetime(date_header)
+        if server_time.tzinfo is None:
+            server_time = server_time.replace(tzinfo=timezone.utc)
+        server_time = server_time.astimezone(timezone.utc)
+        offset = server_time - datetime.now(timezone.utc)
+    except Exception:
+        return
+
+    def adjusted_datetime(remove_tzinfo: bool = True):
+        adjusted = datetime.now(timezone.utc) + offset
+        if remove_tzinfo:
+            return adjusted.replace(tzinfo=None)
+        return adjusted
+
+    botocore_auth.get_current_datetime = adjusted_datetime
 
 
 def list_minio_text_parts(
