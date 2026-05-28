@@ -19,6 +19,7 @@ from libs.core import (
     generate_protein_text,
     load_protein_corpus_text,
     load_protein_pretrain_checkpoint,
+    load_protein_pretrain_checkpoint_for_profile_tuning,
     save_protein_pretrain_checkpoint,
     split_protein_corpus_text,
 )
@@ -173,6 +174,65 @@ class ProteinLMPretrainTests(unittest.TestCase):
         self.assertEqual(PROGEN_BACKBONE_FAMILY, checkpoint["backbone_family"])
         self.assertEqual(1, checkpoint["global_step"])
         self.assertEqual(str(tokenizer_artifact.tokenizer_map_path.resolve()), checkpoint["tokenizer_map_path"])
+
+    def test_loads_protein_checkpoint_into_expanded_profile_vocab_model(self) -> None:
+        tokenizer_artifact = build_or_load_protein_tokenizer(self.train_path, vocab_size=64)
+        base_config = build_progen_config(
+            "0.8B",
+            vocab_size=tokenizer_artifact.vocab_size,
+            context_length=12,
+            dtype=torch.float32,
+        )
+        model_config = build_mdc_config_from_progen_config(
+            {
+                **base_config,
+                "emb_dim": 32,
+                "n_heads": 4,
+                "n_layers": 2,
+                "hidden_dim": 64,
+                "head_dim": 8,
+                "n_kv_groups": 2,
+                "linear_key_head_dim": 8,
+                "linear_value_head_dim": 8,
+                "linear_num_key_heads": 2,
+                "linear_num_value_heads": 2,
+            },
+            dtype=torch.float32,
+        )
+        torch.manual_seed(123)
+        protein_model = MDCDecoderModel(model_config)
+        protein_embedding = protein_model.tok_emb.weight.detach().clone()
+        protein_head = protein_model.out_head.weight.detach().clone()
+        checkpoint_path = save_protein_pretrain_checkpoint(
+            self.root / "checkpoint_profile_seed.pt",
+            model=protein_model,
+            optimizer=None,
+            model_config=model_config,
+            tokenizer=tokenizer_artifact.tokenizer,
+            tokenizer_map_path=tokenizer_artifact.tokenizer_map_path,
+            epoch=1,
+            global_step=1,
+            tokens_seen=0,
+            train_losses=[],
+            val_losses=[],
+        )
+
+        expanded_config = model_config.with_vocab_size(tokenizer_artifact.vocab_size + 8)
+        torch.manual_seed(456)
+        profile_model = MDCDecoderModel(expanded_config)
+        extra_embedding_before = profile_model.tok_emb.weight[tokenizer_artifact.vocab_size :].detach().clone()
+        extra_head_before = profile_model.out_head.weight[tokenizer_artifact.vocab_size :].detach().clone()
+
+        result = load_protein_pretrain_checkpoint_for_profile_tuning(
+            checkpoint_path,
+            model=profile_model,
+        )
+
+        self.assertEqual(tokenizer_artifact.vocab_size, result["copied_vocab_rows"])
+        self.assertTrue(torch.equal(protein_embedding, profile_model.tok_emb.weight[: tokenizer_artifact.vocab_size]))
+        self.assertTrue(torch.equal(protein_head, profile_model.out_head.weight[: tokenizer_artifact.vocab_size]))
+        self.assertTrue(torch.equal(extra_embedding_before, profile_model.tok_emb.weight[tokenizer_artifact.vocab_size :]))
+        self.assertTrue(torch.equal(extra_head_before, profile_model.out_head.weight[tokenizer_artifact.vocab_size :]))
 
     def test_generate_protein_text_cache_matches_uncached(self) -> None:
         tokenizer_artifact = build_or_load_protein_tokenizer(self.train_path, vocab_size=64)

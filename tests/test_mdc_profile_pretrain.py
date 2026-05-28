@@ -15,6 +15,7 @@ from libs.core import (
     MDCProfileSequenceRecord,
     MicrobialDecoderCoreApp,
     build_mdc_tiny_config,
+    build_or_load_protein_tokenizer,
     load_mdc_profile_sequence_records_from_session_artifact,
     create_mdc_profile_sequence_pretrain_dataloader,
     run_mdc_causal_lm_batch_epoch,
@@ -283,6 +284,79 @@ class MDCProfileSequencePretrainTests(unittest.TestCase):
         self.assertIn("labels plastic degradation; input organism Pseudomonas putida", train_text)
         self.assertIn("<|protein|>GKAHAGEYGM<|endoftext|>", train_text)
         self.assertEqual("MVLSPADKTN", compiled.examples[0].sequence)
+
+    def test_profile_artifacts_can_preserve_stage1_protein_token_ids(self) -> None:
+        stage1_dir = self.root / "stage1"
+        stage1_dir.mkdir(parents=True, exist_ok=True)
+        stage1_train_path = stage1_dir / "train.txt"
+        stage1_train_path.write_text(
+            (
+                "<|protein|>MVLSPADKTN<|endoftext|>\n"
+                "<|protein|>GKAHAGEYGM<|endoftext|>\n"
+                "<|protein|>MPEPTIDE<|endoftext|>\n"
+            ),
+            encoding="utf-8",
+        )
+        stage1_tokenizer_artifact = build_or_load_protein_tokenizer(stage1_train_path, vocab_size=64)
+
+        output_dir = self.root / "compiled-with-stage1-tokenizer"
+        artifact = save_mdc_profile_sequence_pretrain_artifacts(
+            self.records,
+            output_dir,
+            sequence_type="protein",
+            profile_vocab_size=64,
+            sequence_tokenizer_map_path=stage1_tokenizer_artifact.tokenizer_map_path,
+        )
+        compiled = MDCProfileSequencePretrainArtifacts.from_directory(output_dir)
+        encoded = compiled.encode_record(compiled.examples[0])
+        fused = compiled.build_fused_batch([encoded])
+        sequence_start, sequence_end = [int(value) for value in fused.sequence_spans[0].tolist()]
+        expected_sequence_ids = stage1_tokenizer_artifact.tokenizer.encode(compiled.examples[0].sequence)
+
+        self.assertEqual("sequence_bpe", artifact.sequence_tokenizer_type)
+        self.assertEqual(0, compiled.layout.sequence_offset)
+        self.assertEqual(stage1_tokenizer_artifact.vocab_size, compiled.layout.profile_offset)
+        self.assertEqual(
+            expected_sequence_ids,
+            fused.token_ids[0, sequence_start:sequence_end].tolist(),
+        )
+        self.assertTrue(all(token_id < stage1_tokenizer_artifact.vocab_size for token_id in expected_sequence_ids))
+
+    def test_instruction_jsonl_auto_uses_adjacent_stage1_tokenizer_map(self) -> None:
+        source_dir = self.root / "instruction-source"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        stage1_train_path = source_dir / "train.txt"
+        stage1_train_path.write_text(
+            (
+                "<|protein|>MVLSPADKTN<|endoftext|>\n"
+                "<|protein|>GKAHAGEYGM<|endoftext|>\n"
+            ),
+            encoding="utf-8",
+        )
+        stage1_tokenizer_artifact = build_or_load_protein_tokenizer(stage1_train_path, vocab_size=64)
+        instruction_path = source_dir / "instruction.jsonl"
+        instruction_path.write_text(
+            json.dumps(
+                {
+                    "instruction": "labels drought tolerance",
+                    "input": "",
+                    "output": "MVLSPADKTN",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        artifact = save_mdc_profile_sequence_pretrain_from_instruction_jsonl(
+            instruction_path,
+            self.root / "instruction-auto-tokenizer",
+            profile_vocab_size=64,
+        )
+        compiled = MDCProfileSequencePretrainArtifacts.from_directory(artifact.output_dir)
+
+        self.assertEqual("sequence_bpe", artifact.sequence_tokenizer_type)
+        self.assertEqual(0, compiled.layout.sequence_offset)
+        self.assertEqual(stage1_tokenizer_artifact.vocab_size, compiled.layout.profile_offset)
 
 if __name__ == "__main__":
     unittest.main()

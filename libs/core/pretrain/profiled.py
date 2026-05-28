@@ -23,6 +23,7 @@ from libs.data.training import KmerTokenizer, ProfileBPETokenizer, ProfileSequen
 from libs.data.training.raw_pipeline.defaults import DEFAULT_KEYWORD_RULES
 from libs.data.training.raw_pipeline.helpers import match_rules
 from libs.data.training.raw_pipeline.models import ProfileKeywordRule
+from libs.data.training.tokenizer import SequenceTokenizer
 
 
 MDC_PROFILE_SEQUENCE_FORMAT = "mdc_profile_sequence_v1"
@@ -37,6 +38,7 @@ RESERVED_TRAIN_TOKENS = (
     TRAIN_END_TOKEN,
     PROTEIN_SEQUENCE_START_TOKEN,
 )
+SequenceTokenizerLike = KmerTokenizer | SequenceTokenizer
 
 
 @dataclass(slots=True, frozen=True)
@@ -70,6 +72,7 @@ class MDCProfileSequenceTextArtifact:
     kmer_size: int
     profile_vocab_size: int
     sequence_vocab_size: int
+    sequence_tokenizer_type: str = "kmer"
     format_version: str = MDC_PROFILE_SEQUENCE_FORMAT
 
 
@@ -123,7 +126,7 @@ class MDCProfileSequencePretrainArtifacts:
     train_text: str
     examples: tuple[MDCProfileSequenceRecord, ...]
     profile_tokenizer: ProfileBPETokenizer
-    sequence_tokenizer: KmerTokenizer
+    sequence_tokenizer: SequenceTokenizerLike
     layout: FusedVocabularyLayout
     format_version: str = MDC_PROFILE_SEQUENCE_FORMAT
     expected_record_count: int | None = None
@@ -146,7 +149,7 @@ class MDCProfileSequencePretrainArtifacts:
             )
 
         profile_tokenizer = _load_profile_tokenizer_from_payload(tokenizer_map["profile_tokenizer"])
-        sequence_tokenizer = _load_kmer_tokenizer_from_payload(tokenizer_map["sequence_tokenizer"])
+        sequence_tokenizer = _load_sequence_tokenizer_from_payload(tokenizer_map["sequence_tokenizer"])
         layout = _load_layout_from_payload(tokenizer_map["layout"])
         examples = tuple(
             parse_profile_sequence_train_line(line)
@@ -209,7 +212,7 @@ class MDCProfileSequencePretrainArtifacts:
             )
 
         profile_tokenizer = _load_profile_tokenizer_from_payload(tokenizer_map["profile_tokenizer"])
-        sequence_tokenizer = _load_kmer_tokenizer_from_payload(tokenizer_map["sequence_tokenizer"])
+        sequence_tokenizer = _load_sequence_tokenizer_from_payload(tokenizer_map["sequence_tokenizer"])
         layout = _load_layout_from_payload(tokenizer_map["layout"])
 
         dataset_sequence_type = str(tokenizer_map.get("sequence_type", sequence_tokenizer.sequence_type))
@@ -255,7 +258,11 @@ class MDCProfileSequencePretrainArtifacts:
 
     @property
     def kmer_size(self) -> int:
-        return self.sequence_tokenizer.kmer_size
+        return int(getattr(self.sequence_tokenizer, "kmer_size", 0))
+
+    @property
+    def sequence_tokenizer_type(self) -> str:
+        return _sequence_tokenizer_payload_type(self.sequence_tokenizer)
 
     def encode_record(self, record: MDCProfileSequenceRecord) -> MDCEncodedProfileSequenceExample:
         if record.sequence_type != self.sequence_type:
@@ -296,7 +303,7 @@ class MDCProfileSequencePretrainArtifacts:
         )
         sequence_input_ids, sequence_attention_mask = _pad_token_tensors(
             [example.sequence_input_ids for example in encoded_examples],
-            pad_token_id=self.sequence_tokenizer.pad_token_id,
+            pad_token_id=_tokenizer_pad_token_id(self.sequence_tokenizer),
         )
 
         result: dict[str, object] = {
@@ -305,10 +312,7 @@ class MDCProfileSequencePretrainArtifacts:
             "sequence_input_ids": sequence_input_ids,
             "sequence_attention_mask": sequence_attention_mask,
             "metadata": [dict(example.metadata) for example in encoded_examples],
-            "config": {
-                "profile_vocab_size": self.layout.profile_vocab_size,
-                "sequence_vocab_size": self.layout.sequence_vocab_size,
-            },
+            "config": self.layout.to_config_dict(),
         }
 
         return result
@@ -507,6 +511,8 @@ def save_mdc_profile_sequence_pretrain_artifacts(
     sequence_type: str = "protein",
     kmer_size: int = 3,
     profile_vocab_size: int = 256,
+    sequence_tokenizer_map_path: Path | str | None = None,
+    sequence_tokenizer: SequenceTokenizerLike | None = None,
 ) -> MDCProfileSequenceTextArtifact:
     resolved_records = _coerce_records(records, default_sequence_type=sequence_type)
     if not resolved_records:
@@ -526,15 +532,16 @@ def save_mdc_profile_sequence_pretrain_artifacts(
     profile_corpus = "\n".join(record.profile for record in resolved_records) + "\n"
 
     profile_tokenizer = ProfileBPETokenizer.from_text(profile_corpus, vocab_size=profile_vocab_size)
-    sequence_tokenizer = KmerTokenizer.from_sequences(
-        (record.sequence for record in resolved_records),
-        kmer_size=kmer_size,
+    resolved_sequence_tokenizer = _resolve_profile_sequence_tokenizer(
+        resolved_records,
         sequence_type=resolved_sequence_type,
+        kmer_size=kmer_size,
+        sequence_tokenizer_map_path=sequence_tokenizer_map_path,
+        sequence_tokenizer=sequence_tokenizer,
     )
-
-    layout = FusedVocabularyLayout(
-        profile_vocab_size=profile_tokenizer.vocab_size,
-        sequence_vocab_size=sequence_tokenizer.vocab_size,
+    layout = _build_profile_sequence_layout(
+        profile_tokenizer=profile_tokenizer,
+        sequence_tokenizer=resolved_sequence_tokenizer,
     )
 
     train_text_path = resolved_output_dir / "train.txt"
@@ -547,8 +554,9 @@ def save_mdc_profile_sequence_pretrain_artifacts(
                 record_count=len(resolved_records),
                 sequence_type=resolved_sequence_type,
                 profile_tokenizer=profile_tokenizer,
-                sequence_tokenizer=sequence_tokenizer,
+                sequence_tokenizer=resolved_sequence_tokenizer,
                 layout=layout,
+                sequence_tokenizer_map_path=sequence_tokenizer_map_path,
             ),
             ensure_ascii=False,
             indent=2,
@@ -563,9 +571,10 @@ def save_mdc_profile_sequence_pretrain_artifacts(
         tokenizer_map_path=str(tokenizer_map_path),
         record_count=len(resolved_records),
         sequence_type=resolved_sequence_type,
-        kmer_size=sequence_tokenizer.kmer_size,
+        kmer_size=int(getattr(resolved_sequence_tokenizer, "kmer_size", 0)),
         profile_vocab_size=profile_tokenizer.vocab_size,
-        sequence_vocab_size=sequence_tokenizer.vocab_size,
+        sequence_vocab_size=resolved_sequence_tokenizer.vocab_size,
+        sequence_tokenizer_type=_sequence_tokenizer_payload_type(resolved_sequence_tokenizer),
     )
 
 
@@ -828,6 +837,8 @@ def save_mdc_profile_sequence_pretrain_from_instruction_jsonl(
     default_sequence_type: str = "protein",
     kmer_size: int = 3,
     profile_vocab_size: int = 256,
+    sequence_tokenizer_map_path: Path | str | None = None,
+    auto_detect_sequence_tokenizer_map: bool = True,
 ) -> MDCProfileSequenceTextArtifact:
     records = load_mdc_profile_sequence_records_from_instruction_jsonl(
         instruction_jsonl_path,
@@ -839,12 +850,17 @@ def save_mdc_profile_sequence_pretrain_from_instruction_jsonl(
             "The current MDC profile-aware text format requires a single sequence_type across instruction records."
         )
 
+    resolved_sequence_tokenizer_map_path = sequence_tokenizer_map_path
+    if resolved_sequence_tokenizer_map_path is None and auto_detect_sequence_tokenizer_map:
+        resolved_sequence_tokenizer_map_path = _discover_adjacent_protein_tokenizer_map(instruction_jsonl_path)
+
     return save_mdc_profile_sequence_pretrain_artifacts(
         records,
         output_dir,
         sequence_type=next(iter(sequence_types)),
         kmer_size=kmer_size,
         profile_vocab_size=profile_vocab_size,
+        sequence_tokenizer_map_path=resolved_sequence_tokenizer_map_path,
     )
 
 
@@ -930,6 +946,7 @@ def save_mdc_profile_sequence_pretrain_from_preparation_sessions(
     kmer_size: int = 3,
     profile_vocab_size: int = 256,
     profile_config: MDCProfileCompilerConfig | None = None,
+    sequence_tokenizer_map_path: Path | str | None = None,
 ) -> MDCProfileSequenceTextArtifact:
     if not artifacts:
         raise ValueError("artifacts must not be empty.")
@@ -959,6 +976,7 @@ def save_mdc_profile_sequence_pretrain_from_preparation_sessions(
         sequence_type=next(iter(sequence_types)),
         kmer_size=kmer_size,
         profile_vocab_size=profile_vocab_size,
+        sequence_tokenizer_map_path=sequence_tokenizer_map_path,
     )
 
 
@@ -1127,13 +1145,29 @@ def _build_tokenizer_map_payload(
     record_count: int,
     sequence_type: str,
     profile_tokenizer: ProfileBPETokenizer,
-    sequence_tokenizer: KmerTokenizer,
+    sequence_tokenizer: SequenceTokenizerLike,
     layout: FusedVocabularyLayout,
+    sequence_tokenizer_map_path: Path | str | None = None,
 ) -> dict[str, object]:
+    sequence_tokenizer_payload: dict[str, object] = {
+        "type": _sequence_tokenizer_payload_type(sequence_tokenizer),
+        "tokenizer": json.loads(sequence_tokenizer.to_json()),
+    }
+    if sequence_tokenizer_map_path is not None:
+        sequence_tokenizer_payload["source_tokenizer_map_path"] = str(Path(sequence_tokenizer_map_path).resolve())
+
     payload: dict[str, object] = {
         "format": MDC_PROFILE_SEQUENCE_FORMAT,
         "record_count": record_count,
         "sequence_type": sequence_type,
+        "compatibility": {
+            "sequence_token_ids_preserved": isinstance(sequence_tokenizer, SequenceTokenizer),
+            "protein_checkpoint_vocab_rows": (
+                sequence_tokenizer.vocab_size
+                if isinstance(sequence_tokenizer, SequenceTokenizer)
+                else None
+            ),
+        },
         "text_format": {
             "profile_start_token": PROFILE_START_TOKEN,
             "separator_token": TRAIN_SEPARATOR_TOKEN,
@@ -1144,20 +1178,90 @@ def _build_tokenizer_map_payload(
             "type": "bpe",
             "tokenizer": json.loads(profile_tokenizer.to_json()),
         },
-        "sequence_tokenizer": {
-            "type": "kmer",
-            "tokenizer": json.loads(sequence_tokenizer.to_json()),
-        },
-        "layout": {
-            "profile_vocab_size": layout.profile_vocab_size,
-            "sequence_vocab_size": layout.sequence_vocab_size,
-            "pad_token_id": layout.pad_token_id,
-            "bos_token_id": layout.bos_token_id,
-            "eos_token_id": layout.eos_token_id,
-            "sep_token_id": layout.sep_token_id,
-        },
+        "sequence_tokenizer": sequence_tokenizer_payload,
+        "layout": layout.to_config_dict(),
     }
     return payload
+
+
+def _resolve_profile_sequence_tokenizer(
+    records: Sequence[MDCProfileSequenceRecord],
+    *,
+    sequence_type: str,
+    kmer_size: int,
+    sequence_tokenizer_map_path: Path | str | None,
+    sequence_tokenizer: SequenceTokenizerLike | None,
+) -> SequenceTokenizerLike:
+    if sequence_tokenizer is not None and sequence_tokenizer_map_path is not None:
+        raise ValueError("Provide either sequence_tokenizer or sequence_tokenizer_map_path, not both.")
+
+    if sequence_tokenizer is not None:
+        if sequence_tokenizer.sequence_type != sequence_type:
+            raise ValueError("Provided sequence_tokenizer sequence_type does not match records.")
+        return sequence_tokenizer
+
+    if sequence_tokenizer_map_path is not None:
+        try:
+            tokenizer = SequenceTokenizer.load_map(sequence_tokenizer_map_path)
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                "sequence_tokenizer_map_path must point to a protein SequenceTokenizer tokenizer_map.json."
+            ) from exc
+        if tokenizer.sequence_type != sequence_type:
+            raise ValueError("sequence_tokenizer_map_path does not contain the requested sequence_type.")
+        return tokenizer
+
+    return KmerTokenizer.from_sequences(
+        (record.sequence for record in records),
+        kmer_size=kmer_size,
+        sequence_type=sequence_type,
+    )
+
+
+def _build_profile_sequence_layout(
+    *,
+    profile_tokenizer: ProfileBPETokenizer,
+    sequence_tokenizer: SequenceTokenizerLike,
+) -> FusedVocabularyLayout:
+    if isinstance(sequence_tokenizer, SequenceTokenizer):
+        profile_offset = sequence_tokenizer.vocab_size
+        return FusedVocabularyLayout(
+            profile_vocab_size=profile_tokenizer.vocab_size,
+            sequence_vocab_size=sequence_tokenizer.vocab_size,
+            sequence_token_offset=0,
+            profile_token_offset=profile_offset,
+            sep_token_id=profile_offset + profile_tokenizer.vocab_size,
+        )
+
+    return FusedVocabularyLayout(
+        profile_vocab_size=profile_tokenizer.vocab_size,
+        sequence_vocab_size=sequence_tokenizer.vocab_size,
+    )
+
+
+def _discover_adjacent_protein_tokenizer_map(instruction_jsonl_path: Path | str) -> Path | None:
+    candidate_path = Path(instruction_jsonl_path).with_name("tokenizer_map.json")
+    if not candidate_path.exists():
+        return None
+    try:
+        tokenizer = SequenceTokenizer.load_map(candidate_path)
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if tokenizer.sequence_type != "protein":
+        return None
+    return candidate_path
+
+
+def _sequence_tokenizer_payload_type(sequence_tokenizer: SequenceTokenizerLike) -> str:
+    if isinstance(sequence_tokenizer, SequenceTokenizer):
+        return "sequence_bpe"
+    return "kmer"
+
+
+def _tokenizer_pad_token_id(tokenizer: SequenceTokenizerLike) -> int:
+    if hasattr(tokenizer, "pad_token_id"):
+        return int(tokenizer.pad_token_id)
+    return int(tokenizer.str_to_int["<|pad|>"])
 
 
 def _load_profile_tokenizer_from_payload(payload: Mapping[str, object]) -> ProfileBPETokenizer:
@@ -1185,6 +1289,18 @@ def _load_profile_tokenizer_from_payload(payload: Mapping[str, object]) -> Profi
     )
 
 
+def _load_sequence_tokenizer_from_payload(payload: Mapping[str, object]) -> SequenceTokenizerLike:
+    tokenizer_type = str(payload.get("type", "kmer"))
+    if tokenizer_type in {"sequence_bpe", "protein_bpe"}:
+        tokenizer_payload = payload.get("tokenizer", payload)
+        tokenizer = SequenceTokenizer()
+        tokenizer._load_from_payload(dict(tokenizer_payload))
+        return tokenizer
+    if tokenizer_type == "kmer":
+        return _load_kmer_tokenizer_from_payload(payload)
+    raise ValueError(f"Unsupported sequence tokenizer type: {tokenizer_type!r}.")
+
+
 def _load_kmer_tokenizer_from_payload(payload: Mapping[str, object]) -> KmerTokenizer:
     tokenizer_payload = payload.get("tokenizer", payload)
     str_to_int = {str(token): int(token_id) for token, token_id in tokenizer_payload["str_to_int"].items()}
@@ -1207,6 +1323,12 @@ def _load_layout_from_payload(payload: Mapping[str, object]) -> FusedVocabularyL
         bos_token_id=int(payload.get("bos_token_id", 1)),
         eos_token_id=int(payload.get("eos_token_id", 2)),
         sep_token_id=int(payload.get("sep_token_id", 3)),
+        profile_token_offset=int(payload.get("profile_token_offset", 4)),
+        sequence_token_offset=(
+            int(payload["sequence_token_offset"])
+            if payload.get("sequence_token_offset") is not None
+            else None
+        ),
     )
 
 

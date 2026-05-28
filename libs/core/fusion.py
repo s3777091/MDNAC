@@ -13,24 +13,45 @@ class FusedVocabularyLayout:
     bos_token_id: int = 1
     eos_token_id: int = 2
     sep_token_id: int = 3
+    profile_token_offset: int = 4
+    sequence_token_offset: int | None = None
 
     def __post_init__(self) -> None:
         if self.profile_vocab_size <= 0:
             raise ValueError("profile_vocab_size must be greater than 0.")
         if self.sequence_vocab_size <= 0:
             raise ValueError("sequence_vocab_size must be greater than 0.")
+        if self.profile_token_offset < 0:
+            raise ValueError("profile_token_offset must be greater than or equal to 0.")
+        if self.sequence_token_offset is not None and self.sequence_token_offset < 0:
+            raise ValueError("sequence_token_offset must be greater than or equal to 0.")
+        profile_range = range(self.profile_offset, self.profile_offset + self.profile_vocab_size)
+        sequence_range = range(self.sequence_offset, self.sequence_offset + self.sequence_vocab_size)
+        if _ranges_overlap(profile_range, sequence_range):
+            raise ValueError("Profile and sequence token ranges must not overlap.")
+        if self.sep_token_id in profile_range or self.sep_token_id in sequence_range:
+            raise ValueError("sep_token_id must not overlap profile or sequence token ranges.")
 
     @property
     def profile_offset(self) -> int:
-        return 4
+        return self.profile_token_offset
 
     @property
     def sequence_offset(self) -> int:
+        if self.sequence_token_offset is not None:
+            return self.sequence_token_offset
         return self.profile_offset + self.profile_vocab_size
 
     @property
     def vocab_size(self) -> int:
-        return self.sequence_offset + self.sequence_vocab_size
+        return max(
+            self.pad_token_id,
+            self.bos_token_id,
+            self.eos_token_id,
+            self.sep_token_id,
+            self.profile_offset + self.profile_vocab_size - 1,
+            self.sequence_offset + self.sequence_vocab_size - 1,
+        ) + 1
 
     @classmethod
     def from_raw_tensor_payload(cls, payload: Mapping[str, object]) -> "FusedVocabularyLayout":
@@ -40,7 +61,29 @@ class FusedVocabularyLayout:
         return cls(
             profile_vocab_size=int(config["profile_vocab_size"]),
             sequence_vocab_size=int(config["sequence_vocab_size"]),
+            pad_token_id=int(config.get("pad_token_id", 0)),
+            bos_token_id=int(config.get("bos_token_id", 1)),
+            eos_token_id=int(config.get("eos_token_id", 2)),
+            sep_token_id=int(config.get("sep_token_id", 3)),
+            profile_token_offset=int(config.get("profile_token_offset", 4)),
+            sequence_token_offset=(
+                int(config["sequence_token_offset"])
+                if config.get("sequence_token_offset") is not None
+                else None
+            ),
         )
+
+    def to_config_dict(self) -> dict[str, int]:
+        return {
+            "profile_vocab_size": self.profile_vocab_size,
+            "sequence_vocab_size": self.sequence_vocab_size,
+            "pad_token_id": self.pad_token_id,
+            "bos_token_id": self.bos_token_id,
+            "eos_token_id": self.eos_token_id,
+            "sep_token_id": self.sep_token_id,
+            "profile_token_offset": self.profile_offset,
+            "sequence_token_offset": self.sequence_offset,
+        }
 
     def map_profile_token_id(self, token_id: int) -> int:
         normalized = int(token_id)
@@ -57,8 +100,12 @@ class FusedVocabularyLayout:
             raise ValueError(
                 f"Sequence token id {normalized} is outside the configured vocabulary size "
                 f"{self.sequence_vocab_size}."
-            )
+        )
         return self.sequence_offset + normalized
+
+
+def _ranges_overlap(left: range, right: range) -> bool:
+    return left.start < right.stop and right.start < left.stop
 
 @dataclass(slots=True, frozen=True)
 class ProfileSequenceFusionConfig:

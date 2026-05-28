@@ -131,7 +131,13 @@ cmd\build_profile_pretrain_from_instruction_jsonl.cmd data\compiled\refseq_bacte
 bash cmd/build_profile_pretrain_from_instruction_jsonl.sh data/compiled/refseq_bacteria_protein/instruction.jsonl -o data/compiled/refseq_bacteria_profile_pretrain
 ```
 
-This writes a profile-aware `train.txt` where each line keeps `instruction` and optional `input` as the conditioning profile, followed by the protein `output` target. The generated `tokenizer_map.json` uses the existing MDC fused profile/sequence layout, so it loads through `MDCProfileSequencePretrainArtifacts` and `create_mdc_profile_sequence_pretrain_dataloader`.
+This writes a profile-aware `train.txt` where each line keeps `instruction` and optional `input` as the conditioning profile, followed by the protein `output` target. If `instruction.jsonl` sits next to the stage-1 protein `tokenizer_map.json`, the command auto-loads that map and preserves protein token IDs for instruction tuning. You can also pass it explicitly:
+
+```powershell
+cmd\build_profile_pretrain_from_instruction_jsonl.cmd data\compiled\refseq_bacteria_protein\instruction.jsonl -o data\compiled\refseq_bacteria_profile_pretrain --protein-tokenizer-map data\compiled\refseq_bacteria_protein\tokenizer_map.json
+```
+
+Use `--legacy-kmer-tokenizer` only when you intentionally want the older stage-2-only k-mer target tokenizer. That mode runs, but it does not cleanly reuse the stage-1 protein embedding rows.
 
 If you need to collapse duplicates introduced by repeated append-only runs, use the dedupe command:
 
@@ -193,7 +199,7 @@ The maintained data workflow is command-line driven through `cmd/`. The older no
 - keeps one current on-disk training format: `train.txt` + `tokenizer_map.json`
 - stores profile text and target sequence in the same training line
 - tokenizes profile text with a from-scratch BPE tokenizer
-- tokenizes protein targets with k-mer tokens (`k=3` by default)
+- tokenizes protein targets with the stage-1 protein BPE tokenizer for instruction tuning
 - loads the text corpus back into the MDC fused decoder input
 - pulls sequences from ENA by query
 - pulls sequences from DDBJ by accession list
@@ -223,8 +229,18 @@ Each line in `train.txt` keeps both the profile prompt and the target sequence:
 The combined `tokenizer_map.json` stores:
 
 - one profile BPE tokenizer
-- one sequence tokenizer (`KmerTokenizer`, `k=3` by default)
+- one sequence tokenizer, preferably the stage-1 protein `SequenceTokenizer`
 - the fused vocabulary layout used by `libs/core`
+
+When a stage-1 protein tokenizer is used, the fused layout keeps protein token IDs unchanged:
+
+```text
+0..protein_vocab-1        protein tokenizer rows from stage 1
+protein_vocab..N          profile tokenizer rows
+N                         <|sep|>
+```
+
+That lets a stage-1 checkpoint load into the expanded profile-tuning model by copying the original protein embedding and output-head rows directly.
 
 This lets the data stay text-first on disk, while the loader still reconstructs the exact MDC input:
 
@@ -262,8 +278,8 @@ artifact = save_mdc_profile_sequence_pretrain_artifacts(
     records,
     output_dir=Path("artifacts/mdc-profile-text"),
     sequence_type="protein",
-    kmer_size=3,
     profile_vocab_size=256,
+    sequence_tokenizer_map_path=Path("data/compiled/refseq_bacteria_protein/tokenizer_map.json"),
 )
 
 artifacts = MDCProfileSequencePretrainArtifacts.from_directory(artifact.output_dir)

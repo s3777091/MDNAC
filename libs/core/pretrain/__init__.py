@@ -51,6 +51,7 @@ from .protein_lm import (
     load_protein_corpus_text,
     load_protein_corpus_text_parts,
     load_protein_pretrain_checkpoint,
+    load_protein_pretrain_checkpoint_for_profile_tuning,
     save_protein_pretrain_checkpoint,
     split_protein_corpus_text,
 )
@@ -122,6 +123,7 @@ __all__ = [
     "load_protein_corpus_text",
     "load_protein_corpus_text_parts",
     "load_protein_pretrain_checkpoint",
+    "load_protein_pretrain_checkpoint_for_profile_tuning",
     "MDCTrainingRuntime",
     "parse_profile_sequence_train_line",
     "prepare_mdc_training_runtime",

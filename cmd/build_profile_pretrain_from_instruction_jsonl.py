@@ -35,7 +35,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--kmer-size",
         type=int,
         default=3,
-        help="K-mer size for protein sequence targets.",
+        help="Legacy fallback k-mer size when no protein tokenizer map is used.",
+    )
+    parser.add_argument(
+        "--protein-tokenizer-map",
+        type=Path,
+        default=None,
+        help=(
+            "Stage-1 protein tokenizer_map.json to preserve protein token IDs for instruction tuning. "
+            "When omitted, a sibling tokenizer_map.json next to instruction.jsonl is used if it is a protein map."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-kmer-tokenizer",
+        action="store_true",
+        help="Force the older profile-aware k-mer target tokenizer instead of auto-loading a protein tokenizer map.",
     )
     parser.add_argument(
         "--sequence-type",
@@ -55,6 +69,8 @@ def main() -> int:
         default_sequence_type=args.sequence_type,
         kmer_size=args.kmer_size,
         profile_vocab_size=args.profile_vocab_size,
+        sequence_tokenizer_map_path=args.protein_tokenizer_map,
+        auto_detect_sequence_tokenizer_map=not args.legacy_kmer_tokenizer,
     )
 
     print(f"[instruction.jsonl] {args.instruction_jsonl}")
@@ -65,6 +81,7 @@ def main() -> int:
     print(f"[sequence_type] {artifact.sequence_type}")
     print(f"[profile_vocab_size] {artifact.profile_vocab_size}")
     print(f"[sequence_vocab_size] {artifact.sequence_vocab_size}")
+    print(f"[sequence_tokenizer_type] {artifact.sequence_tokenizer_type}")
     print(f"[kmer_size] {artifact.kmer_size}")
     return 0
 

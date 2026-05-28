@@ -571,6 +571,93 @@ def load_protein_pretrain_checkpoint(
     return checkpoint
 
 
+def load_protein_pretrain_checkpoint_for_profile_tuning(
+    path: Path | str,
+    *,
+    model: torch.nn.Module,
+    map_location: torch.device | str = "cpu",
+    strict_backbone: bool = True,
+) -> dict[str, Any]:
+    checkpoint = torch.load(Path(path), map_location=map_location)
+    if not is_supported_protein_checkpoint_family(checkpoint.get("model_family")):
+        raise ValueError(
+            "Unsupported protein checkpoint family: "
+            f"{checkpoint.get('model_family')!r}"
+        )
+
+    checkpoint_state = normalize_parallel_state_dict(checkpoint["model_state_dict"])
+    target_model = unwrap_mdc_training_model(model)
+    target_state = target_model.state_dict()
+    adapted_state: dict[str, torch.Tensor] = {}
+    skipped_keys: dict[str, str] = {}
+    copied_vocab_rows = 0
+
+    for name, source_tensor in checkpoint_state.items():
+        target_tensor = target_state.get(name)
+        if target_tensor is None:
+            skipped_keys[name] = "missing_in_target"
+            continue
+
+        if tuple(source_tensor.shape) == tuple(target_tensor.shape):
+            adapted_state[name] = source_tensor
+            continue
+
+        if name in {"tok_emb.weight", "out_head.weight"} and _can_copy_vocab_prefix(
+            source_tensor,
+            target_tensor,
+        ):
+            expanded_tensor = target_tensor.detach().clone()
+            rows = int(source_tensor.shape[0])
+            expanded_tensor[:rows] = source_tensor.to(
+                device=expanded_tensor.device,
+                dtype=expanded_tensor.dtype,
+            )
+            adapted_state[name] = expanded_tensor
+            copied_vocab_rows = max(copied_vocab_rows, rows)
+            continue
+
+        skipped_keys[name] = f"shape_mismatch:{tuple(source_tensor.shape)}->{tuple(target_tensor.shape)}"
+
+    incompatible = target_model.load_state_dict(adapted_state, strict=False)
+    missing_keys = list(incompatible.missing_keys)
+    unexpected_keys = list(incompatible.unexpected_keys)
+
+    if strict_backbone:
+        non_vocab_skipped = {
+            key: reason
+            for key, reason in skipped_keys.items()
+            if key not in {"tok_emb.weight", "out_head.weight"}
+        }
+        non_vocab_missing = [
+            key
+            for key in missing_keys
+            if key not in {"tok_emb.weight", "out_head.weight"}
+        ]
+        if non_vocab_skipped or non_vocab_missing or unexpected_keys:
+            raise ValueError(
+                "Protein checkpoint is not compatible with the target profile-tuning model. "
+                f"skipped={non_vocab_skipped}, missing={non_vocab_missing}, unexpected={unexpected_keys}"
+            )
+
+    return {
+        "checkpoint": checkpoint,
+        "copied_vocab_rows": copied_vocab_rows,
+        "loaded_keys": sorted(adapted_state),
+        "missing_keys": missing_keys,
+        "unexpected_keys": unexpected_keys,
+        "skipped_keys": skipped_keys,
+    }
+
+
+def _can_copy_vocab_prefix(source_tensor: torch.Tensor, target_tensor: torch.Tensor) -> bool:
+    return (
+        source_tensor.ndim == 2
+        and target_tensor.ndim == 2
+        and int(source_tensor.shape[0]) <= int(target_tensor.shape[0])
+        and int(source_tensor.shape[1]) == int(target_tensor.shape[1])
+    )
+
+
 def _optimizer_state_dict(
     optimizer: torch.optim.Optimizer | Sequence[torch.optim.Optimizer] | None,
 ):
