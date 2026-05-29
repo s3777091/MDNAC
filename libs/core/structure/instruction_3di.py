@@ -308,6 +308,8 @@ def annotate_instruction_jsonl_3di(
     progress_callback: Callable[[str], None] | None = None,
     report_every_seconds: float = 30.0,
 ) -> Instruction3DiUpdateSummary:
+    _ensure_provider_ready(provider)
+
     if batch_size <= 0:
         raise ValueError("batch_size must be greater than 0.")
 
@@ -535,6 +537,8 @@ def annotate_s3_instruction_jsonl_3di(
                 "to overwrite source objects after each part is annotated."
             )
 
+    _ensure_provider_ready(provider)
+
     client = s3_client or build_minio_s3_client(config)
     parts = list_minio_text_parts(
         prefix_uri=prefix_uri,
@@ -729,6 +733,15 @@ def _parse_json_object_line(raw_line: str, *, line_number: int, path: Path) -> M
     if not isinstance(payload, MutableMapping):
         raise ValueError(f"{path} line {line_number} must contain a JSON object.")
     return payload
+
+
+def _ensure_provider_ready(provider) -> None:
+    """Eagerly load the model and run a tiny test prediction to fail fast before any data download."""
+    load_fn = getattr(provider, "_load", None)
+    if callable(load_fn):
+        load_fn()
+    else:
+        _predict_3di_batch(provider, ["ACDEFGHIKLMNPQRSTVWY"])
 
 
 def _provider_model_name(provider) -> str:

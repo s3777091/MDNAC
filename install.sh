@@ -105,8 +105,23 @@ verify_install() {
   uv run --no-sync python -c "from libs.data.config import DataConfig; print('ok: microbial-dna-compiler environment is importable')"
 }
 
+install_jupyter_kernel() {
+  log "Installing ipykernel and registering Jupyter kernel"
+  uv pip install ipykernel
+  uv run python -m ipykernel install --user --name "microbial-dna-compiler" --display-name "Microbial DNA Compiler (uv)"
+}
+
+persist_path() {
+  if ! grep -q '.local/bin' ~/.bashrc 2>/dev/null; then
+    log "Persisting PATH in ~/.bashrc"
+    echo 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+  fi
+}
+
 print_next_steps() {
   cat <<'EOF'
+
+
 
 Environment is ready.
 
@@ -129,6 +144,8 @@ main() {
   sync_environment "$@"
   prepare_local_files
   verify_install
+  install_jupyter_kernel
+  persist_path
   print_next_steps
 }
 

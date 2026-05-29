@@ -13,7 +13,13 @@ dependencies = [
     "matplotlib>=3.8",
     "numpy>=1.26",
     "PyYAML>=6.0",
-    "torch>=2.9",
+    "torch>=2.11",
+]
+
+[project.optional-dependencies]
+structure = [
+    "transformers>=4.40",
+    "sentencepiece>=0.2",
 ]
 
 [tool.setuptools.packages.find]
