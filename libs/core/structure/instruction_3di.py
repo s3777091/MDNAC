@@ -222,7 +222,76 @@ class ProstT5Structure3DiProvider:
         assert self._model is not None
         assert self._resolved_device is not None
 
+        import warnings
+
         normalized_sequences = [normalize_prostt5_aa_sequence(sequence) for sequence in sequences]
+
+        # Run the batch prediction.
+        structures = self._generate_3di(normalized_sequences)
+
+        # Validate each result; retry individually for large mismatches.
+        final: list[str] = []
+        for i, (seq, structure_3di) in enumerate(zip(normalized_sequences, structures)):
+            delta = len(structure_3di) - len(seq) if structure_3di else -len(seq)
+
+            if structure_3di and abs(delta) <= 1:
+                # Good result (exact or ±1 off-by-one). Trim to match.
+                if delta != 0:
+                    warnings.warn(
+                        f"ProstT5 length mismatch: predicted {len(structure_3di)} tokens "
+                        f"for a {len(seq)}-residue sequence. Trimming to match.",
+                        stacklevel=2,
+                    )
+                final.append(structure_3di[: len(seq)])
+                continue
+
+            # Large mismatch or empty — retry this sequence individually.
+            # Batching sequences of very different lengths causes padding/beam-search
+            # interference that makes ProstT5 hit EOS prematurely on long sequences.
+            warnings.warn(
+                f"ProstT5 batch prediction mismatched for sequence index {i} "
+                f"(predicted {len(structure_3di) if structure_3di else 0} vs "
+                f"{len(seq)} residues). Retrying individually.",
+                stacklevel=2,
+            )
+            retry = self._generate_3di([seq])
+            retry_3di = retry[0] if retry else ""
+            retry_delta = len(retry_3di) - len(seq) if retry_3di else -len(seq)
+
+            if retry_3di and abs(retry_delta) <= 1:
+                if retry_delta != 0:
+                    warnings.warn(
+                        f"ProstT5 individual retry trimmed: {len(retry_3di)} → {len(seq)}.",
+                        stacklevel=2,
+                    )
+                final.append(retry_3di[: len(seq)])
+            elif retry_3di:
+                # Still mismatched after individual retry — return empty so the
+                # pipeline can skip this record instead of crashing.
+                warnings.warn(
+                    f"ProstT5 individual retry still mismatched "
+                    f"(predicted {len(retry_3di)} vs {len(seq)} residues). "
+                    f"Skipping 3Di for this sequence.",
+                    stacklevel=2,
+                )
+                final.append("")
+            else:
+                warnings.warn(
+                    f"ProstT5 returned an empty 3Di prediction for a "
+                    f"{len(seq)}-residue sequence. Skipping.",
+                    stacklevel=2,
+                )
+                final.append("")
+
+        return tuple(final)
+
+    def _generate_3di(self, normalized_sequences: list[str]) -> list[str]:
+        """Low-level generation: encode → generate → decode → normalize."""
+        assert self._torch is not None
+        assert self._tokenizer is not None
+        assert self._model is not None
+        assert self._resolved_device is not None
+
         prepared_inputs = [
             f"{AA_TO_3DI_PREFIX} {' '.join(sequence)}"
             for sequence in normalized_sequences
@@ -241,36 +310,13 @@ class ProstT5Structure3DiProvider:
             generated = self._model.generate(
                 encoded["input_ids"],
                 attention_mask=encoded["attention_mask"],
-                # max_new_tokens counts only generated tokens (no decoder-start-token offset).
-                # +1 buffer ensures beam search never truncates the final residue.
                 max_new_tokens=max(lengths) + 1,
                 num_return_sequences=1,
                 **self.generation_kwargs,
             )
 
         decoded = self._tokenizer.batch_decode(generated, skip_special_tokens=True)
-        structures = [normalize_3di_structure(value) for value in decoded]
-        import warnings
-
-        for sequence, structure_3di in zip(normalized_sequences, structures, strict=True):
-            if not structure_3di:
-                raise ValueError("ProstT5 returned an empty 3Di prediction.")
-            delta = len(structure_3di) - len(sequence)
-            if delta != 0:
-                if abs(delta) <= 1:
-                    # Known off-by-one from ProstT5 beam decoding — warn and trim.
-                    warnings.warn(
-                        f"ProstT5 length mismatch: predicted {len(structure_3di)} tokens "
-                        f"for a {len(sequence)}-residue sequence. Trimming to match.",
-                        stacklevel=2,
-                    )
-                else:
-                    raise ValueError(
-                        "ProstT5 returned a 3Di prediction with unexpected length "
-                        f"({len(structure_3di)} for a {len(sequence)} residue sequence)."
-                    )
-        # Trim to exact sequence length (handles the ±1 beam-search off-by-one).
-        return tuple(s[: len(seq)] for s, seq in zip(structures, normalized_sequences))
+        return [normalize_3di_structure(value) for value in decoded]
 
     def _load(self) -> None:
         if self._model is not None:
@@ -384,19 +430,22 @@ def annotate_instruction_jsonl_3di(
             normalized_predictions: dict[str, str] = {}
             for sequence, predicted_structure in zip(sequence_chunk, predicted_structures, strict=True):
                 normalized_structure = normalize_3di_structure(predicted_structure)
-                if not normalized_structure:
-                    raise ValueError("3Di provider returned an empty or invalid 3Di string.")
-                normalized_predictions[sequence] = normalized_structure
-                sequence_to_structure[sequence] = normalized_structure
-            if cache is not None:
+                if normalized_structure:
+                    normalized_predictions[sequence] = normalized_structure
+                    sequence_to_structure[sequence] = normalized_structure
+                # else: leave out of sequence_to_structure — record will be written without 3Di field.
+            if cache is not None and normalized_predictions:
                 cache.set_many(model_name=model_name, values=normalized_predictions)
             model_prediction_count += len(sequence_chunk)
 
         for record in pending_records:
             assert record.payload is not None
             assert record.sequence is not None
-            record.payload[field_name] = sequence_to_structure[record.sequence]
-            new_3di_count += 1
+            structure_value = sequence_to_structure.get(record.sequence)
+            if structure_value:
+                record.payload[field_name] = structure_value
+                new_3di_count += 1
+            # else: prediction failed — record is written as-is (no 3Di field added).
 
         for record in buffer:
             if record.raw_line is not None:
