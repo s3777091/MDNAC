@@ -241,25 +241,36 @@ class ProstT5Structure3DiProvider:
             generated = self._model.generate(
                 encoded["input_ids"],
                 attention_mask=encoded["attention_mask"],
-                max_length=max(lengths),
-                min_length=min(lengths),
-                early_stopping=True,
+                # max_new_tokens counts only generated tokens (no decoder-start-token offset).
+                # +1 buffer ensures beam search never truncates the final residue.
+                max_new_tokens=max(lengths) + 1,
                 num_return_sequences=1,
                 **self.generation_kwargs,
             )
 
         decoded = self._tokenizer.batch_decode(generated, skip_special_tokens=True)
         structures = [normalize_3di_structure(value) for value in decoded]
+        import warnings
+
         for sequence, structure_3di in zip(normalized_sequences, structures, strict=True):
             if not structure_3di:
                 raise ValueError("ProstT5 returned an empty 3Di prediction.")
-            if len(structure_3di) != len(sequence):
-                # Keep the result, but make the mismatch explicit so bad model/runtime settings do not pass silently.
-                raise ValueError(
-                    "ProstT5 returned a 3Di prediction with unexpected length "
-                    f"({len(structure_3di)} for a {len(sequence)} residue sequence)."
-                )
-        return tuple(structures)
+            delta = len(structure_3di) - len(sequence)
+            if delta != 0:
+                if abs(delta) <= 1:
+                    # Known off-by-one from ProstT5 beam decoding — warn and trim.
+                    warnings.warn(
+                        f"ProstT5 length mismatch: predicted {len(structure_3di)} tokens "
+                        f"for a {len(sequence)}-residue sequence. Trimming to match.",
+                        stacklevel=2,
+                    )
+                else:
+                    raise ValueError(
+                        "ProstT5 returned a 3Di prediction with unexpected length "
+                        f"({len(structure_3di)} for a {len(sequence)} residue sequence)."
+                    )
+        # Trim to exact sequence length (handles the ±1 beam-search off-by-one).
+        return tuple(s[: len(seq)] for s, seq in zip(structures, normalized_sequences))
 
     def _load(self) -> None:
         if self._model is not None:
