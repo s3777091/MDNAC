@@ -310,7 +310,7 @@ class ProstT5Structure3DiProvider:
             generated = self._model.generate(
                 encoded["input_ids"],
                 attention_mask=encoded["attention_mask"],
-                max_new_tokens=max(lengths) + 1,
+                max_new_tokens=max(lengths),
                 num_return_sequences=1,
                 **self.generation_kwargs,
             )
