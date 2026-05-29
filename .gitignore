@@ -27,5 +27,6 @@ models/**/*.gguf
 models/**/checkpoints/
 models/**/artifacts/
 
-instruction.jsonl
 train.txt
+
+temp/instruction.slim.jsonl

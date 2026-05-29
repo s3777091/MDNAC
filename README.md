@@ -181,6 +181,14 @@ bash cmd/downsample_instruction_jsonl.sh data/instruction.jsonl --dry-run --keep
 
 Unlike chopping the file head/tail, this keeps at least one example per protein bucket, preserves dataset-group balance, and spreads selected records across each bucket with deterministic systematic sampling.
 
+To add Foldseek-style `3Di` structure tokens to `instruction.jsonl`, use the reusable structure pipeline in `libs.core.structure` or run:
+
+```text
+notebooks/stage_2_foundation_model/05_update_instruction_3di_from_s3.ipynb
+```
+
+The notebook streams `.jsonl` parts from MinIO/S3, annotates missing top-level `3Di` fields from each protein `output`, uploads annotated parts to a separate prefix, and writes `manifest.3di.json`. It uses a SQLite cache so repeated protein sequences and resumed runs do not call the 3Di model again. The ProstT5 adapter is optional and loads `Rostlab/ProstT5` only when the notebook creates the provider; install `transformers` and `sentencepiece` in the active environment before running it.
+
 If the output folder name matches a direct child folder under the input root, the build automatically scopes to that child folder. For example:
 
 ```bash
