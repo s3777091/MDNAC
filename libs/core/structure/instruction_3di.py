@@ -229,7 +229,7 @@ class ProstT5Structure3DiProvider:
         ]
         lengths = [len(sequence) for sequence in normalized_sequences]
 
-        encoded = self._tokenizer.batch_encode_plus(
+        encoded = self._tokenizer(
             prepared_inputs,
             add_special_tokens=True,
             padding="longest",
@@ -275,7 +275,7 @@ class ProstT5Structure3DiProvider:
             ) from exc
 
         resolved_device = torch.device(self.device or ("cuda:0" if torch.cuda.is_available() else "cpu"))
-        tokenizer = AutoTokenizer.from_pretrained(self.model_name, do_lower_case=False)
+        tokenizer = AutoTokenizer.from_pretrained(self.model_name, do_lower_case=False, use_fast=False)
         model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name).to(resolved_device)
 
         use_half = self.use_half
