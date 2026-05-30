@@ -158,6 +158,9 @@ def load_protein_training_config(
         "training": {
             "num_epochs": int(_nested_get(config_mapping, "training", "num_epochs") or 1),
             "max_steps": _optional_int(_nested_get(config_mapping, "training", "max_steps")),
+            "gradient_accumulation_steps": int(
+                _nested_get(config_mapping, "training", "gradient_accumulation_steps") or 1
+            ),
             "save_every_steps": _optional_int(
                 _nested_get(config_mapping, "training", "save_every_steps"),
                 default=100,
@@ -447,6 +450,8 @@ def _normalize_device(value: Any) -> str:
 def _resolve_mixed_precision(value: Any) -> str:
     if value is None:
         return "auto"
+    if isinstance(value, bool):
+        return "no" if not value else "auto"
     resolved = str(value).strip().lower()
     if resolved not in {"auto", "no", "fp16", "bf16"}:
         raise ValueError("runtime.mixed_precision must be one of: auto, no, fp16, bf16")

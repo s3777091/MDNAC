@@ -47,7 +47,6 @@ model:
 training:
   num_epochs: 3
   max_steps: null
-  gradient_accumulation_steps: 1
   save_every_steps: 500
   eval_freq: 200
   eval_batches: 20

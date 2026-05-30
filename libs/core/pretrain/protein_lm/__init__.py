@@ -20,6 +20,13 @@ from .core import (
     save_protein_pretrain_checkpoint,
     split_protein_corpus_text,
 )
+from .memory import (
+    build_vram_report,
+    estimate_protein_pretrain_memory,
+    profile_protein_pretrain_memory,
+    recommend_16gb_train_config,
+    write_vram_report,
+)
 from .resume_state import (
     create_resume_state,
     load_resume_state,
@@ -77,6 +84,11 @@ __all__ = [
     "save_protein_pretrain_checkpoint",
     "save_resume_state",
     "split_protein_corpus_text",
+    "build_vram_report",
+    "estimate_protein_pretrain_memory",
+    "profile_protein_pretrain_memory",
+    "recommend_16gb_train_config",
+    "write_vram_report",
     "update_resume_state_metrics",
     "update_resume_state_progress",
 ]

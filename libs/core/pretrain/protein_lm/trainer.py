@@ -228,17 +228,31 @@ class ProteinPretrainTrainer:
         self.tokenizer = SequenceTokenizer.load_map(tokenizer_map_path)
 
     def _setup_model_from_config(self) -> None:
+        mixed_precision = self._runtime_cfg.get("mixed_precision", "auto")
+        model_dtype = self._resolve_model_dtype(mixed_precision)
         progen_config = build_progen_config(
             self._model_cfg["progen_model_size"],
             vocab_size=self.tokenizer.vocab_size,
             context_length=self._model_cfg["context_length"],
-            dtype=torch.float32,
+            dtype=model_dtype,
         )
         overrides = self._model_cfg["progen_config_overrides"]
         if overrides:
             progen_config = {**progen_config, **overrides}
-        self.model_config = build_mdc_config_from_progen_config(progen_config, dtype=torch.float32)
+        self.model_config = build_mdc_config_from_progen_config(progen_config, dtype=model_dtype)
         self.model = MDCDecoderModel(self.model_config)
+
+    def _resolve_model_dtype(self, mixed_precision: str) -> torch.dtype:
+        if mixed_precision == "bf16":
+            return torch.bfloat16
+        if mixed_precision == "fp16":
+            return torch.float16
+        if mixed_precision == "auto":
+            if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+                return torch.bfloat16
+            if torch.cuda.is_available():
+                return torch.float16
+        return torch.float32
 
     def _restore_model_from_checkpoint(self, checkpoint_meta: dict[str, Any]) -> None:
         model_config_payload = dict(checkpoint_meta["model_config"])
@@ -414,10 +428,20 @@ class ProteinPretrainTrainer:
         save_every_steps = self._training_cfg.get("save_every_steps")
         save_best = self._training_cfg.get("save_best", True)
         save_last = self._training_cfg.get("save_last", True)
+        gradient_accumulation_steps = self._training_cfg.get("gradient_accumulation_steps", 1)
 
         optimizer_list = list(self.optimizer) if isinstance(self.optimizer, (list, tuple)) else [self.optimizer]
         step_eval_enabled = eval_freq > 0 and not self.runtime.distributed and train_eval_loader is not None
         start_epoch = self._epoch
+
+        # Mixed precision setup
+        mixed_precision = self._runtime_cfg.get("mixed_precision", "auto")
+        autocast_dtype = self._resolve_autocast_dtype(mixed_precision, device)
+        use_autocast = autocast_dtype is not None and device.type == "cuda"
+        use_grad_scaler = use_autocast and autocast_dtype == torch.float16
+        grad_scaler = torch.amp.GradScaler("cuda") if use_grad_scaler else None
+
+        micro_step = 0
 
         for epoch_offset in range(1, num_epochs + 1):
             epoch = start_epoch + epoch_offset
@@ -425,31 +449,79 @@ class ProteinPretrainTrainer:
             set_mdc_data_loader_epoch(train_loader, epoch - 1)
             self.model.train()
 
+            for opt in optimizer_list:
+                opt.zero_grad(set_to_none=True)
+
             for batch in train_loader:
                 batch = self._move_batch(batch, device)
-                for opt in optimizer_list:
-                    opt.zero_grad(set_to_none=True)
-                logits = self.model(batch.input_ids, batch.attention_mask)
-                loss = compute_mdc_causal_lm_loss(logits, batch.labels)
-                loss.backward()
-                if grad_clip_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip_norm)
-                for opt in optimizer_list:
-                    opt.step()
+                micro_step += 1
 
-                self._global_step += 1
+                # Forward with optional autocast
+                if use_autocast:
+                    with torch.amp.autocast("cuda", dtype=autocast_dtype):
+                        logits = self.model(batch.input_ids, batch.attention_mask)
+                        loss = compute_mdc_causal_lm_loss(logits, batch.labels)
+                else:
+                    logits = self.model(batch.input_ids, batch.attention_mask)
+                    loss = compute_mdc_causal_lm_loss(logits, batch.labels)
+
+                # Scale loss for gradient accumulation
+                scaled_loss = loss / gradient_accumulation_steps
+
+                if grad_scaler is not None:
+                    grad_scaler.scale(scaled_loss).backward()
+                else:
+                    scaled_loss.backward()
+
                 self._tokens_seen += self._count_step_tokens(batch)
 
-                if step_eval_enabled and self._global_step % eval_freq == 0:
-                    self._run_eval(train_eval_loader, val_loader, eval_batches, save_best)
+                # Optimizer step at accumulation boundary
+                if micro_step % gradient_accumulation_steps == 0:
+                    if grad_clip_norm is not None:
+                        if grad_scaler is not None:
+                            grad_scaler.unscale_(*optimizer_list)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip_norm)
 
-                if save_every_steps and self._global_step % save_every_steps == 0:
-                    if self.is_main_process and save_last:
-                        self._save_last_checkpoint()
-                        self._save_resume_state()
+                    if grad_scaler is not None:
+                        for opt in optimizer_list:
+                            grad_scaler.step(opt)
+                        grad_scaler.update()
+                    else:
+                        for opt in optimizer_list:
+                            opt.step()
 
-                if max_steps is not None and self._global_step >= max_steps:
-                    break
+                    for opt in optimizer_list:
+                        opt.zero_grad(set_to_none=True)
+
+                    self._global_step += 1
+
+                    if step_eval_enabled and self._global_step % eval_freq == 0:
+                        self._run_eval(train_eval_loader, val_loader, eval_batches, save_best)
+
+                    if save_every_steps and self._global_step % save_every_steps == 0:
+                        if self.is_main_process and save_last:
+                            self._save_last_checkpoint()
+                            self._save_resume_state()
+
+                    if max_steps is not None and self._global_step >= max_steps:
+                        break
+
+            # Handle leftover microbatches at end of epoch
+            if micro_step % gradient_accumulation_steps != 0:
+                if grad_clip_norm is not None:
+                    if grad_scaler is not None:
+                        grad_scaler.unscale_(*optimizer_list)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip_norm)
+                if grad_scaler is not None:
+                    for opt in optimizer_list:
+                        grad_scaler.step(opt)
+                    grad_scaler.update()
+                else:
+                    for opt in optimizer_list:
+                        opt.step()
+                for opt in optimizer_list:
+                    opt.zero_grad(set_to_none=True)
+                self._global_step += 1
 
             self._distributed_barrier()
 
@@ -467,6 +539,19 @@ class ProteinPretrainTrainer:
         if self.is_main_process and self._training_cfg.get("save_final", True):
             self._save_final_checkpoint()
             self._save_resume_state()
+
+    def _resolve_autocast_dtype(self, mixed_precision: str, device: torch.device) -> torch.dtype | None:
+        if device.type != "cuda":
+            return None
+        if mixed_precision == "bf16":
+            return torch.bfloat16
+        if mixed_precision == "fp16":
+            return torch.float16
+        if mixed_precision == "auto":
+            if torch.cuda.is_bf16_supported():
+                return torch.bfloat16
+            return torch.float16
+        return None
 
     def _run_eval(self, train_eval_loader, val_loader, eval_batches: int, save_best: bool) -> None:
         device = self.runtime.device
