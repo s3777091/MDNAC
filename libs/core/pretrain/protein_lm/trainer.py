@@ -303,12 +303,15 @@ class ProteinPretrainTrainer:
         if mixed_precision == "bf16":
             return torch.bfloat16
         if mixed_precision == "fp16":
-            return torch.float16
+            # FP16 AMP requires FP32 master weights; autocast handles FP16 compute.
+            # GradScaler cannot unscale FP16 gradients.
+            return torch.float32
         if mixed_precision == "auto":
             if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
                 return torch.bfloat16
             if torch.cuda.is_available():
-                return torch.float16
+                # Same as explicit fp16: keep model in fp32 for GradScaler compatibility.
+                return torch.float32
         return torch.float32
 
     def _restore_model_from_checkpoint(self, checkpoint_meta: dict[str, Any]) -> None:
