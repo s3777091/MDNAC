@@ -19,37 +19,38 @@ data:
   cleanup_completed_parts: false
   validate_cached_parts: true
   train_ratio: 0.9
-  batch_size: 2
-  num_workers: 0
-  pin_memory: auto
-  shuffle_parts: false
+  batch_size: 4
+  num_workers: 2
+  pin_memory: true
+  shuffle_parts: true
   shuffle_examples: true
-  shuffle_buffer_size: 8192
+  shuffle_buffer_size: 10000
 
 model:
   progen_model_size: 0.8B
-  context_length: 512
-  stride: 256
+  context_length: 1024
+  stride: 512
   tokenizer_vocab_size: 512
   rebuild_tokenizer: false
+  # ~200M params — fits 16GB VRAM with Muon + activations
   progen_config_overrides:
-    emb_dim: 256
-    n_heads: 4
-    n_layers: 4
-    hidden_dim: 1024
+    emb_dim: 1024
+    n_heads: 16
+    n_layers: 16
+    hidden_dim: 4096
     head_dim: 64
-    n_kv_groups: 2
+    n_kv_groups: 4
     linear_key_head_dim: 64
     linear_value_head_dim: 64
-    linear_num_key_heads: 4
-    linear_num_value_heads: 4
+    linear_num_key_heads: 16
+    linear_num_value_heads: 16
 
 training:
-  num_epochs: 1
+  num_epochs: 3
   max_steps: null
-  save_every_steps: 100
-  eval_freq: 50
-  eval_batches: 10
+  save_every_steps: 500
+  eval_freq: 200
+  eval_batches: 20
   grad_clip_norm: 1.0
   save_last: true
   save_best: true
@@ -58,7 +59,7 @@ training:
 optimizer:
   type: muon
   learning_rate: 3.0e-4
-  muon_learning_rate: null
+  muon_learning_rate: 2.0e-3
   weight_decay: 0.1
   fused: auto
 
