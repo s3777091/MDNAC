@@ -25,6 +25,7 @@ from .memory import (
     estimate_protein_pretrain_memory,
     profile_protein_pretrain_memory,
     recommend_16gb_train_config,
+    run_preflight_vram_check,
     write_vram_report,
 )
 from .resume_state import (

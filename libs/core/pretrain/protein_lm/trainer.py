@@ -57,6 +57,7 @@ from libs.core.pretrain.protein_lm.resume_state import (
     update_resume_state_metrics,
     update_resume_state_progress,
 )
+from libs.core.pretrain.protein_lm.memory import run_preflight_vram_check
 from libs.data.training.tokenizer import SequenceTokenizer
 
 
@@ -158,6 +159,9 @@ class ProteinPretrainTrainer:
 
         self._save_config_snapshot()
 
+        # Preflight VRAM check
+        self._run_preflight_if_enabled()
+
         self._log("📂 [5/6] Building data loaders...")
         train_loader, train_eval_loader, val_loader = self._build_data_loaders()
         self._log("✅ Data loaders ready")
@@ -216,6 +220,10 @@ class ProteinPretrainTrainer:
         self._log(f"✅ Resumed from epoch={self._epoch} step={self._global_step} tokens={self._tokens_seen:,}")
 
         self._save_config_snapshot()
+
+        # Preflight VRAM check
+        self._run_preflight_if_enabled()
+
         self._log("📂 [6/6] Building data loaders...")
         train_loader, train_eval_loader, val_loader = self._build_data_loaders()
         self._log("✅ Data loaders ready")
@@ -319,6 +327,43 @@ class ProteinPretrainTrainer:
             self._optimizer_cfg,
             device=self.runtime.device,
         )
+
+    def _run_preflight_if_enabled(self) -> None:
+        """Run VRAM preflight check if runtime.preflight_vram_check is enabled."""
+        if not self._runtime_cfg.get("preflight_vram_check", False):
+            return
+        if not self.is_main_process:
+            return
+
+        target_vram_gb = float(self._runtime_cfg.get("target_vram_gb", 14.0))
+        batch_size = self._data_cfg["batch_size"]
+        context_length = int(self.model_config.context_length)
+        mixed_precision = self._runtime_cfg.get("mixed_precision", "auto")
+        gradient_accumulation_steps = self._training_cfg.get("gradient_accumulation_steps", 1)
+
+        report_path = self._paths["checkpoint_dir"] / "vram_report.json"
+
+        self._log(f"🔍 Running VRAM preflight check (target={target_vram_gb:.1f}GB)...")
+
+        # This will raise RuntimeError if config doesn't fit
+        result = run_preflight_vram_check(
+            model=self.model,
+            tokenizer=self.tokenizer,
+            optimizer=self.optimizer,
+            batch_size=batch_size,
+            context_length=context_length,
+            device=self.runtime.device,
+            target_vram_gb=target_vram_gb,
+            mixed_precision=mixed_precision,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            report_output_path=report_path,
+        )
+
+        peak = result.get("peak_allocated_gb")
+        if peak is not None:
+            self._log(f"✅ Preflight passed — peak={peak:.2f}GB / target={target_vram_gb:.1f}GB")
+        else:
+            self._log(f"✅ Preflight skipped (no CUDA measurement available)")
 
     def _discover_local_paths(self) -> tuple[Path, ...]:
         train_text_path = self._paths["train_text_path"]
@@ -481,6 +526,12 @@ class ProteinPretrainTrainer:
         use_grad_scaler = use_autocast and autocast_dtype == torch.float16
         grad_scaler = torch.amp.GradScaler("cuda") if use_grad_scaler else None
 
+        # Configure linear attention fallback precision
+        import libs.core.mdc.linear_attention as _la_module
+        _la_module.use_fp32_fallback_linear_attention = self._runtime_cfg.get(
+            "use_fp32_fallback_linear_attention", True
+        )
+
         micro_step = 0
         _last_loss = float("nan")
 
@@ -497,65 +548,69 @@ class ProteinPretrainTrainer:
                 opt.zero_grad(set_to_none=True)
 
             for batch in train_loader:
-                batch = self._move_batch(batch, device)
-                micro_step += 1
+                try:
+                    batch = self._move_batch(batch, device)
+                    micro_step += 1
 
-                # Forward with optional autocast
-                if use_autocast:
-                    with torch.amp.autocast("cuda", dtype=autocast_dtype):
+                    # Forward with optional autocast
+                    if use_autocast:
+                        with torch.amp.autocast("cuda", dtype=autocast_dtype):
+                            logits = self.model(batch.input_ids, attn_mask=batch.attention_mask)
+                            loss = compute_mdc_causal_lm_loss(logits, batch.labels)
+                    else:
                         logits = self.model(batch.input_ids, attn_mask=batch.attention_mask)
                         loss = compute_mdc_causal_lm_loss(logits, batch.labels)
-                else:
-                    logits = self.model(batch.input_ids, attn_mask=batch.attention_mask)
-                    loss = compute_mdc_causal_lm_loss(logits, batch.labels)
 
-                # Scale loss for gradient accumulation
-                scaled_loss = loss / gradient_accumulation_steps
-
-                if grad_scaler is not None:
-                    grad_scaler.scale(scaled_loss).backward()
-                else:
-                    scaled_loss.backward()
-
-                self._tokens_seen += self._count_step_tokens(batch)
-
-                # Optimizer step at accumulation boundary
-                if micro_step % gradient_accumulation_steps == 0:
-                    if grad_clip_norm is not None:
-                        if grad_scaler is not None:
-                            grad_scaler.unscale_(*optimizer_list)
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip_norm)
+                    # Scale loss for gradient accumulation
+                    scaled_loss = loss / gradient_accumulation_steps
 
                     if grad_scaler is not None:
-                        for opt in optimizer_list:
-                            grad_scaler.step(opt)
-                        grad_scaler.update()
+                        grad_scaler.scale(scaled_loss).backward()
                     else:
+                        scaled_loss.backward()
+
+                    self._tokens_seen += self._count_step_tokens(batch)
+
+                    # Optimizer step at accumulation boundary
+                    if micro_step % gradient_accumulation_steps == 0:
+                        if grad_clip_norm is not None:
+                            if grad_scaler is not None:
+                                grad_scaler.unscale_(*optimizer_list)
+                            torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip_norm)
+
+                        if grad_scaler is not None:
+                            for opt in optimizer_list:
+                                grad_scaler.step(opt)
+                            grad_scaler.update()
+                        else:
+                            for opt in optimizer_list:
+                                opt.step()
+
                         for opt in optimizer_list:
-                            opt.step()
+                            opt.zero_grad(set_to_none=True)
 
-                    for opt in optimizer_list:
-                        opt.zero_grad(set_to_none=True)
+                        self._global_step += 1
+                        _last_loss = float(loss.item())
 
-                    self._global_step += 1
-                    _last_loss = float(loss.item())
+                        if self._global_step % log_every_steps == 0:
+                            self._log(
+                                f"  🔄 step={self._global_step} | loss={_last_loss:.4f} | tokens={self._tokens_seen:,}"
+                            )
 
-                    if self._global_step % log_every_steps == 0:
-                        self._log(
-                            f"  🔄 step={self._global_step} | loss={_last_loss:.4f} | tokens={self._tokens_seen:,}"
-                        )
+                        if step_eval_enabled and self._global_step % eval_freq == 0:
+                            self._run_eval(train_eval_loader, val_loader, eval_batches, save_best, autocast_dtype=autocast_dtype)
 
-                    if step_eval_enabled and self._global_step % eval_freq == 0:
-                        self._run_eval(train_eval_loader, val_loader, eval_batches, save_best)
+                        if save_every_steps and self._global_step % save_every_steps == 0:
+                            if self.is_main_process and save_last:
+                                self._log(f"  💾 Saving checkpoint at step {self._global_step}...")
+                                self._save_last_checkpoint()
+                                self._save_resume_state()
 
-                    if save_every_steps and self._global_step % save_every_steps == 0:
-                        if self.is_main_process and save_last:
-                            self._log(f"  💾 Saving checkpoint at step {self._global_step}...")
-                            self._save_last_checkpoint()
-                            self._save_resume_state()
+                        if max_steps is not None and self._global_step >= max_steps:
+                            break
 
-                    if max_steps is not None and self._global_step >= max_steps:
-                        break
+                except torch.cuda.OutOfMemoryError:
+                    self._handle_oom(batch_size=self._data_cfg["batch_size"], context_length=int(self.model_config.context_length))
 
             # Handle leftover microbatches at end of epoch
             if micro_step % gradient_accumulation_steps != 0:
@@ -578,7 +633,7 @@ class ProteinPretrainTrainer:
 
             if self.is_main_process:
                 self._log(f"  📊 Epoch {epoch} end — evaluating...")
-                self._run_epoch_end_eval(train_eval_loader, val_loader, eval_batches, save_best)
+                self._run_epoch_end_eval(train_eval_loader, val_loader, eval_batches, save_best, autocast_dtype=autocast_dtype)
                 if save_last:
                     self._log(f"  💾 Saving epoch checkpoint...")
                     self._save_last_checkpoint()
@@ -608,13 +663,13 @@ class ProteinPretrainTrainer:
             return torch.float16
         return None
 
-    def _run_eval(self, train_eval_loader, val_loader, eval_batches: int, save_best: bool) -> None:
+    def _run_eval(self, train_eval_loader, val_loader, eval_batches: int, save_best: bool, autocast_dtype: torch.dtype | None = None) -> None:
         device = self.runtime.device
         train_eval_loss = evaluate_mdc_causal_lm_batch_loss(
-            self.model, train_eval_loader, device=device, max_batches=eval_batches,
+            self.model, train_eval_loader, device=device, max_batches=eval_batches, autocast_dtype=autocast_dtype,
         )
         val_loss = (
-            evaluate_mdc_causal_lm_batch_loss(self.model, val_loader, device=device, max_batches=eval_batches)
+            evaluate_mdc_causal_lm_batch_loss(self.model, val_loader, device=device, max_batches=eval_batches, autocast_dtype=autocast_dtype)
             if val_loader is not None
             else float("nan")
         )
@@ -631,15 +686,15 @@ class ProteinPretrainTrainer:
             best_marker = " 🏆 new best!" if save_best and not math.isnan(metric) and metric <= self._best_val_loss else ""
             print(f"  📊 eval step={self._global_step} | train={train_eval_loss:.4f} | val={val_loss:.4f}{best_marker}", flush=True)
 
-    def _run_epoch_end_eval(self, train_eval_loader, val_loader, eval_batches: int, save_best: bool) -> None:
+    def _run_epoch_end_eval(self, train_eval_loader, val_loader, eval_batches: int, save_best: bool, autocast_dtype: torch.dtype | None = None) -> None:
         device = self.runtime.device
         train_eval_loss = (
-            evaluate_mdc_causal_lm_batch_loss(self.model, train_eval_loader, device=device, max_batches=eval_batches)
+            evaluate_mdc_causal_lm_batch_loss(self.model, train_eval_loader, device=device, max_batches=eval_batches, autocast_dtype=autocast_dtype)
             if train_eval_loader is not None
             else float("nan")
         )
         val_loss = (
-            evaluate_mdc_causal_lm_batch_loss(self.model, val_loader, device=device, max_batches=eval_batches)
+            evaluate_mdc_causal_lm_batch_loss(self.model, val_loader, device=device, max_batches=eval_batches, autocast_dtype=autocast_dtype)
             if val_loader is not None
             else float("nan")
         )
@@ -653,6 +708,51 @@ class ProteinPretrainTrainer:
             self._save_best_checkpoint()
 
         self._log(f"  ✅ Epoch {self._epoch} done | train={train_eval_loss:.4f} | val={val_loss:.4f}")
+
+    def _handle_oom(self, batch_size: int, context_length: int) -> None:
+        """Handle CUDA OOM during training: cleanup, save state, raise with guidance."""
+        import gc as _gc
+        torch.cuda.empty_cache()
+        _gc.collect()
+
+        param_count = sum(p.numel() for p in self.model.parameters())
+        peak_gb = None
+        if torch.cuda.is_available():
+            try:
+                peak_gb = torch.cuda.max_memory_allocated() / (1024**3)
+            except Exception:
+                pass
+
+        # Try to save emergency resume state
+        if self.is_main_process:
+            try:
+                self._save_resume_state()
+                self._log("💾 Emergency resume state saved.")
+            except Exception:
+                pass
+
+        suggested_fixes = [
+            "1. Set batch_size=1",
+            "2. Reduce context_length to 512 or 384",
+            "3. Set eval_batches=1",
+            "4. Increase eval_freq to reduce evaluation frequency",
+            "5. Use the 16GB-optimized config: train.16gb.yaml",
+        ]
+        peak_str = f"{peak_gb:.2f}" if peak_gb is not None else "unknown"
+        msg = (
+            f"\n{'='*60}\n"
+            f"CUDA OUT OF MEMORY during training\n"
+            f"{'='*60}\n"
+            f"  batch_size={batch_size}\n"
+            f"  context_length={context_length}\n"
+            f"  model_params={param_count:,}\n"
+            f"  peak_memory_gb={peak_str}\n"
+            f"\nSuggested fixes:\n"
+        )
+        for fix in suggested_fixes:
+            msg += f"  {fix}\n"
+        msg += f"{'='*60}\n"
+        raise RuntimeError(msg)
 
     def _save_last_checkpoint(self) -> Path:
         return self._save_checkpoint(self._resume_cfg["output_checkpoint_path"])

@@ -54,6 +54,11 @@ def _fast_path_unavailable_reason() -> str:
         reasons.append("CUDA is not available")
     return "; ".join(reasons) or "required kernels could not be loaded"
 
+
+# Module-level setting: when False, fallback uses the ambient dtype (e.g. fp16/bf16)
+# instead of forcing fp32.  Default True for numerical safety.
+use_fp32_fallback_linear_attention: bool = True
+
 class _NotebookLogger:
     def __init__(self) -> None:
         self._seen: set[str] = set()
@@ -129,8 +134,9 @@ def torch_chunk_gated_delta_rule(
         query = l2norm(query, dim=-1, eps=1e-6)
         key = l2norm(key, dim=-1, eps=1e-6)
 
+    compute_dtype = torch.float32 if use_fp32_fallback_linear_attention else query.dtype
     query, key, value, beta, g = [
-        x.transpose(1, 2).contiguous().to(torch.float32)
+        x.transpose(1, 2).contiguous().to(compute_dtype)
         for x in (query, key, value, beta, g)
     ]
 
@@ -208,8 +214,9 @@ def torch_recurrent_gated_delta_rule(
         query = l2norm(query, dim=-1, eps=1e-6)
         key = l2norm(key, dim=-1, eps=1e-6)
 
+    compute_dtype = torch.float32 if use_fp32_fallback_linear_attention else query.dtype
     query, key, value, beta, g = [
-        x.transpose(1, 2).contiguous().to(torch.float32)
+        x.transpose(1, 2).contiguous().to(compute_dtype)
         for x in (query, key, value, beta, g)
     ]
 
@@ -298,10 +305,16 @@ class MDCGatedDeltaNet(nn.Module):
         )
 
         if not self.fast_path_enabled:
+            fp32_note = (
+                " The fallback uses fp32 computation (2x VRAM for activations)."
+                if use_fp32_fallback_linear_attention
+                else " Fallback is using ambient dtype (fp16/bf16) — verify loss is finite."
+            )
             logger.warning_once(
                 "The MDC fast path is unavailable ("
                 + _fast_path_unavailable_reason()
                 + "). Falling back to the torch implementation."
+                + fp32_note
             )
 
         self.in_proj_qkv = nn.Linear(self.hidden_size, self.key_dim * 2 + self.value_dim, bias=False)

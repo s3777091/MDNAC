@@ -69,6 +69,9 @@ runtime:
   ddp_find_unused_parameters: false
   data_parallel_device_ids: null
   mixed_precision: auto
+  preflight_vram_check: true
+  target_vram_gb: 14.0
+  use_fp32_fallback_linear_attention: true
 
 resume:
   checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_last.pt

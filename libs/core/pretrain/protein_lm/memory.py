@@ -12,6 +12,10 @@ import torch
 from libs.core.interfaces import CausalLMBatch
 from libs.core.mdc import MDCDecoderModel
 from libs.core.mdc.config import MDCModelConfig
+from libs.core.mdc.linear_attention import (
+    is_fast_path_available as _is_fast_path_available,
+    _missing_fast_path_libs as _missing_libs,
+)
 from libs.core.pretrain.training import compute_mdc_causal_lm_loss
 from libs.core.pretrain.training_config import (
     create_protein_training_optimizer,
@@ -168,6 +172,8 @@ def estimate_protein_pretrain_memory(
         "dtype": str(dtype),
         "mixed_precision": mixed_precision,
         "optimizer_type": optimizer_type,
+        "fast_path_available": _is_fast_path_available,
+        "missing_fast_path_libs": list(_missing_libs) if _missing_libs else [],
         "is_estimate": True,
         "measured_on_cuda": False,
     }
@@ -283,20 +289,27 @@ def build_vram_report(
     report: dict[str, Any] = {
         "tokenizer_map_path": str(config["paths"]["tokenizer_map_path"]),
         "resolved_vocab_size": tokenizer.vocab_size,
+        "parameter_count": estimate["param_count"],
         "model_config": model_config.to_dict() if hasattr(model_config, "to_dict") else dict(model_config),
         "batch_size": batch_size,
         "context_length": context_length,
+        "gradient_accumulation_steps": config["training"].get("gradient_accumulation_steps", 1),
         "optimizer_type": optimizer_type,
         "mixed_precision": mixed_precision,
         "resolved_dtype": str(resolved_dtype),
         "total_vram_gb": max_vram_gb,
         "target_budget_gb": target_budget_gb,
         "estimated_peak_gb": estimated_peak_gb,
+        "peak_allocated_gb": None,
+        "peak_reserved_gb": None,
         "margin_gb": target_budget_gb - estimated_peak_gb,
         "fit": estimated_peak_gb <= target_budget_gb,
+        "fast_path_available": _is_fast_path_available,
+        "missing_fast_path_libs": list(_missing_libs) if _missing_libs else [],
         "estimate": estimate,
         "measured_peak_gb": None,
         "profile": None,
+        "recommended_config": None,
     }
 
     if torch.cuda.is_available():
@@ -315,10 +328,17 @@ def build_vram_report(
                 run_forward_backward=True,
             )
             report["measured_peak_gb"] = profile["peak_allocated_gb"]
+            report["peak_allocated_gb"] = profile["peak_allocated_gb"]
+            report["peak_reserved_gb"] = profile["peak_reserved_gb"]
             report["profile"] = profile
             report["fit"] = profile["peak_allocated_gb"] <= target_budget_gb
 
             del model, optimizer
+            gc.collect()
+            torch.cuda.empty_cache()
+        except torch.cuda.OutOfMemoryError:
+            report["fit"] = False
+            report["profile_error"] = "OOM during preflight profiling — config does not fit"
             gc.collect()
             torch.cuda.empty_cache()
         except RuntimeError as exc:
@@ -531,6 +551,154 @@ def write_vram_report(report: dict[str, Any], output_path: Path | str) -> Path:
         encoding="utf-8",
     )
     return output_path
+
+
+def run_preflight_vram_check(
+    model: torch.nn.Module,
+    tokenizer: SequenceTokenizer,
+    optimizer: Any,
+    *,
+    batch_size: int,
+    context_length: int,
+    device: torch.device | str,
+    target_vram_gb: float = 14.0,
+    mixed_precision: str = "auto",
+    gradient_accumulation_steps: int = 1,
+    report_output_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Run a preflight VRAM check before training starts.
+
+    If CUDA is available, runs a dummy forward/backward/optimizer step and
+    measures peak memory. Catches OOM and reports config doesn't fit.
+
+    Returns a dict with fit=True/False, peak memory, and recommendations.
+    Raises RuntimeError if config doesn't fit and training should not proceed.
+    """
+    resolved_device = torch.device(device)
+    param_count = sum(p.numel() for p in model.parameters())
+
+    result: dict[str, Any] = {
+        "fit": True,
+        "device": str(resolved_device),
+        "target_vram_gb": target_vram_gb,
+        "parameter_count": param_count,
+        "batch_size": batch_size,
+        "context_length": context_length,
+        "gradient_accumulation_steps": gradient_accumulation_steps,
+        "mixed_precision": mixed_precision,
+        "fast_path_available": _is_fast_path_available,
+        "missing_fast_path_libs": list(_missing_libs) if _missing_libs else [],
+        "peak_allocated_gb": None,
+        "peak_reserved_gb": None,
+        "total_vram_gb": None,
+    }
+
+    if resolved_device.type != "cuda" or not torch.cuda.is_available():
+        # Cannot measure on CPU — estimate only
+        result["note"] = "Preflight skipped: no CUDA device. Using estimates only."
+        return result
+
+    total_vram = torch.cuda.get_device_properties(resolved_device).total_mem
+    result["total_vram_gb"] = total_vram / (1024**3)
+
+    # Resolve autocast dtype
+    autocast_dtype = None
+    if mixed_precision == "bf16":
+        autocast_dtype = torch.bfloat16
+    elif mixed_precision == "fp16":
+        autocast_dtype = torch.float16
+    elif mixed_precision == "auto":
+        if torch.cuda.is_bf16_supported():
+            autocast_dtype = torch.bfloat16
+        else:
+            autocast_dtype = torch.float16
+    use_autocast = autocast_dtype is not None
+
+    try:
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats(resolved_device)
+        gc.collect()
+
+        # Create dummy batch
+        vocab_size = tokenizer.vocab_size
+        input_ids = torch.randint(0, vocab_size, (batch_size, context_length), device=resolved_device)
+        attention_mask = torch.ones(batch_size, context_length, dtype=torch.bool, device=resolved_device)
+        labels = input_ids.clone()
+
+        model.train()
+        optimizer_list = list(optimizer) if isinstance(optimizer, (list, tuple)) else [optimizer]
+
+        for opt in optimizer_list:
+            opt.zero_grad(set_to_none=True)
+
+        # Forward with autocast
+        if use_autocast:
+            with torch.amp.autocast("cuda", dtype=autocast_dtype):
+                logits = model(input_ids, attn_mask=attention_mask)
+                loss = compute_mdc_causal_lm_loss(logits, labels)
+        else:
+            logits = model(input_ids, attn_mask=attention_mask)
+            loss = compute_mdc_causal_lm_loss(logits, labels)
+
+        # Backward
+        (loss / gradient_accumulation_steps).backward()
+
+        # Optimizer step
+        for opt in optimizer_list:
+            opt.step()
+
+        peak_allocated = torch.cuda.max_memory_allocated(resolved_device)
+        peak_reserved = torch.cuda.max_memory_reserved(resolved_device)
+
+        result["peak_allocated_gb"] = peak_allocated / (1024**3)
+        result["peak_reserved_gb"] = peak_reserved / (1024**3)
+        result["fit"] = (peak_allocated / (1024**3)) <= target_vram_gb
+
+        # Cleanup
+        del input_ids, attention_mask, labels, logits, loss
+        for opt in optimizer_list:
+            opt.zero_grad(set_to_none=True)
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    except torch.cuda.OutOfMemoryError:
+        gc.collect()
+        torch.cuda.empty_cache()
+        result["fit"] = False
+        result["oom_during_preflight"] = True
+
+    # Write report if path provided
+    if report_output_path is not None:
+        write_vram_report(result, report_output_path)
+
+    if not result["fit"]:
+        suggested_fixes = [
+            "1. Use batch_size=1",
+            "2. Reduce context_length to 512 or 384",
+            "3. Set eval_batches=1",
+            "4. Increase eval_freq to reduce eval frequency",
+            "5. Use the 16GB-optimized config: train.16gb.yaml",
+        ]
+        msg = (
+            f"\n{'='*60}\n"
+            f"VRAM PREFLIGHT CHECK FAILED\n"
+            f"{'='*60}\n"
+            f"  batch_size={batch_size}\n"
+            f"  context_length={context_length}\n"
+            f"  model_params={param_count:,}\n"
+            f"  target_vram_gb={target_vram_gb:.1f}\n"
+            f"  peak_allocated_gb={result.get('peak_allocated_gb', 'OOM')}\n"
+            f"  fast_path_available={_is_fast_path_available}\n"
+        )
+        if _missing_libs:
+            msg += f"  missing_fast_path_libs={_missing_libs}\n"
+        msg += f"\nSuggested fixes:\n"
+        for fix in suggested_fixes:
+            msg += f"  {fix}\n"
+        msg += f"{'='*60}\n"
+        raise RuntimeError(msg)
+
+    return result
 
 
 def _make_json_serializable(obj: Any) -> Any:

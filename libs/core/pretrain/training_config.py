@@ -204,6 +204,18 @@ def load_protein_training_config(
             "mixed_precision": _resolve_mixed_precision(
                 _nested_get(config_mapping, "runtime", "mixed_precision")
             ),
+            "preflight_vram_check": _bool_value(
+                _nested_get(config_mapping, "runtime", "preflight_vram_check"),
+                False,
+            ),
+            "target_vram_gb": _optional_float(
+                _nested_get(config_mapping, "runtime", "target_vram_gb"),
+                default=14.0,
+            ),
+            "use_fp32_fallback_linear_attention": _bool_value(
+                _nested_get(config_mapping, "runtime", "use_fp32_fallback_linear_attention"),
+                True,
+            ),
         },
         "resume": {
             "checkpoint_path": _as_project_path(

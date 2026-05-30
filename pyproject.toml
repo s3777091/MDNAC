@@ -21,6 +21,16 @@ dependencies = [
     "tiktoken>=0.7",
 ]
 
+[project.optional-dependencies]
+cuda = [
+    "causal-conv1d>=1.2",
+    "flash-linear-attention>=0.0.1",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
 [tool.setuptools.packages.find]
 include = ["libs*"]
 

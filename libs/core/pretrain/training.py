@@ -82,9 +82,13 @@ def evaluate_mdc_causal_lm_batch_loss(
     *,
     device: torch.device | str,
     max_batches: int | None = None,
+    autocast_dtype: torch.dtype | None = None,
 ) -> float:
     model_or_app.eval()
     losses: list[float] = []
+
+    resolved_device = torch.device(device)
+    use_autocast = autocast_dtype is not None and resolved_device.type == "cuda"
 
     with torch.no_grad():
         for batch_index, batch in enumerate(batches):
@@ -92,8 +96,13 @@ def evaluate_mdc_causal_lm_batch_loss(
                 break
 
             resolved_batch = _move_causal_lm_batch_to_device(batch, device=device)
-            logits = _forward_causal_lm_batch(model_or_app, resolved_batch)
-            loss = compute_mdc_causal_lm_loss(logits, resolved_batch.labels)
+            if use_autocast:
+                with torch.amp.autocast("cuda", dtype=autocast_dtype):
+                    logits = _forward_causal_lm_batch(model_or_app, resolved_batch)
+                    loss = compute_mdc_causal_lm_loss(logits, resolved_batch.labels)
+            else:
+                logits = _forward_causal_lm_batch(model_or_app, resolved_batch)
+                loss = compute_mdc_causal_lm_loss(logits, resolved_batch.labels)
             losses.append(float(loss.item()))
 
     if not losses:

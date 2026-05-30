@@ -17,16 +17,16 @@ data:
   cleanup_completed_parts: false
   validate_cached_parts: true
   train_ratio: 0.9
-  batch_size: 4
-  num_workers: 2
-  pin_memory: false
+  batch_size: 1
+  num_workers: 0
+  pin_memory: true
   shuffle_parts: true
   shuffle_examples: true
-  shuffle_buffer_size: 10000
+  shuffle_buffer_size: 4096
 model:
   progen_model_size: 0.8B
-  context_length: 1024
-  stride: 512
+  context_length: 512
+  stride: 256
   tokenizer_vocab_size: 256
   rebuild_tokenizer: false
   progen_config_overrides:
@@ -43,10 +43,10 @@ model:
 training:
   num_epochs: 3
   max_steps: null
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 8
   save_every_steps: 500
-  eval_freq: 200
-  eval_batches: 10
+  eval_freq: 500
+  eval_batches: 2
   grad_clip_norm: 1.0
   save_last: true
   save_best: true
@@ -62,9 +62,10 @@ runtime:
   multi_gpu_mode: auto
   ddp_find_unused_parameters: false
   data_parallel_device_ids: null
-  mixed_precision: auto
+  mixed_precision: fp16
   preflight_vram_check: true
-  target_vram_gb: 16
+  target_vram_gb: 14.0
+  use_fp32_fallback_linear_attention: false
 resume:
   checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_last.pt
   output_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_last.pt
