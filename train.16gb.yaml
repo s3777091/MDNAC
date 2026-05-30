@@ -2,13 +2,13 @@ mode:
   name: train_from_scratch
   resume_if_available: true
 paths:
-  train_text_path: C:\Users\ekko.huynh\Microbial DNA Compiler\data\compiled\refseq_bacteria_protein\train.txt
-  tokenizer_map_path: C:\Users\ekko.huynh\Microbial DNA Compiler\tokenizer_map.json
-  checkpoint_dir: C:\Users\ekko.huynh\Microbial DNA Compiler\data\checkpoints\protein_from_scratch
-  train_part_cache_dir: C:\Users\ekko.huynh\Microbial DNA Compiler\data\cache\protein_train_parts
-  resume_state_path: C:\Users\ekko.huynh\Microbial DNA Compiler\data\checkpoints\protein_from_scratch\resume_state.json
-  metrics_history_path: C:\Users\ekko.huynh\Microbial DNA Compiler\data\checkpoints\protein_from_scratch\metrics_history.jsonl
-  training_config_snapshot_path: C:\Users\ekko.huynh\Microbial DNA Compiler\data\checkpoints\protein_from_scratch\training_config.snapshot.json
+  train_text_path: data/compiled/refseq_bacteria_protein/train.txt
+  tokenizer_map_path: tokenizer_map.json
+  checkpoint_dir: data/checkpoints/protein_from_scratch
+  train_part_cache_dir: data/cache/protein_train_parts
+  resume_state_path: data/checkpoints/protein_from_scratch/resume_state.json
+  metrics_history_path: data/checkpoints/protein_from_scratch/metrics_history.jsonl
+  training_config_snapshot_path: data/checkpoints/protein_from_scratch/training_config.snapshot.json
 data:
   train_part_glob: train_part_*.txt
   prefer_local_train_parts: true
@@ -66,13 +66,13 @@ runtime:
   preflight_vram_check: true
   target_vram_gb: 16
 resume:
-  checkpoint_path: C:\Users\ekko.huynh\Microbial DNA Compiler\data\checkpoints\protein_from_scratch\checkpoint_last.pt
-  output_checkpoint_path: C:\Users\ekko.huynh\Microbial DNA Compiler\data\checkpoints\protein_from_scratch\checkpoint_last.pt
-  best_checkpoint_path: C:\Users\ekko.huynh\Microbial DNA Compiler\data\checkpoints\protein_from_scratch\checkpoint_best.pt
-  final_checkpoint_path: C:\Users\ekko.huynh\Microbial DNA Compiler\data\checkpoints\protein_from_scratch\checkpoint_final.pt
-  restore_optimizer_state: 'True'
-  override_optimizer_hyperparameters: 'True'
-  resume_state_path: C:\Users\ekko.huynh\Microbial DNA Compiler\data\checkpoints\protein_from_scratch\resume_state.json
+  checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_last.pt
+  output_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_last.pt
+  best_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
+  final_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_final.pt
+  restore_optimizer_state: true
+  override_optimizer_hyperparameters: true
+  resume_state_path: data/checkpoints/protein_from_scratch/resume_state.json
 minio:
   train_parts_prefix_uri: s3://microbial-dna-compiler/data/protein/parts
   train_part_uris: []

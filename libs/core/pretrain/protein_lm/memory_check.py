@@ -10,6 +10,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import yaml
 import torch
@@ -230,6 +231,16 @@ def main() -> None:
         print(f"Recommended config written to: {args.write}")
 
 
+def _to_relative_path(value: Any, project_root: Path) -> str:
+    """Convert a Path to a relative POSIX string for portability."""
+    try:
+        path = Path(value) if not isinstance(value, Path) else value
+        rel = path.relative_to(project_root)
+        return rel.as_posix()
+    except (ValueError, TypeError):
+        return str(value)
+
+
 def _write_recommended_yaml(
     project_root: Path,
     config: dict,
@@ -265,7 +276,7 @@ def _write_recommended_yaml(
 
     yaml_content = {
         "mode": {"name": config["mode"]["name"], "resume_if_available": True},
-        "paths": {k: str(v) for k, v in config["paths"].items()},
+        "paths": {k: _to_relative_path(v, project_root) for k, v in config["paths"].items()},
         "data": {
             "train_part_glob": config["data"]["train_part_glob"],
             "prefer_local_train_parts": config["data"]["prefer_local_train_parts"],
@@ -317,7 +328,7 @@ def _write_recommended_yaml(
             "preflight_vram_check": True,
             "target_vram_gb": 16,
         },
-        "resume": {k: str(v) for k, v in config["resume"].items()},
+        "resume": {k: _to_relative_path(v, project_root) if isinstance(v, Path) else v for k, v in config["resume"].items()},
         "minio": {
             "train_parts_prefix_uri": config["minio"]["train_parts_prefix_uri"],
             "train_part_uris": list(config["minio"]["train_part_uris"]),
