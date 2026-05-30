@@ -8,7 +8,7 @@ param(
     [switch]$SkipKernel
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 if ($env:PYTHON_VERSION) { $Python = $env:PYTHON_VERSION }
 if ($env:TORCH_VARIANT) { $Torch = $env:TORCH_VARIANT }
 
