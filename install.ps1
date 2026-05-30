@@ -64,7 +64,21 @@ if ($LASTEXITCODE -ne 0) {
 # --- Recreate venv ---
 if ($Recreate) {
     Log 'Removing .venv'
-    if (Test-Path '.venv') { Remove-Item -Recurse -Force '.venv' }
+    if (Test-Path '.venv') {
+        # Deactivate if active
+        if ($env:VIRTUAL_ENV) { & deactivate 2>$null }
+        # Kill any python processes from this venv
+        $venvPath = (Resolve-Path '.venv').Path
+        Get-Process python*, pip* -ErrorAction SilentlyContinue | Where-Object {
+            $_.Path -and $_.Path.StartsWith($venvPath)
+        } | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+        # Use cmd rmdir which handles locked files better
+        & cmd /c "rmdir /s /q .venv" 2>$null
+        if (Test-Path '.venv') {
+            Remove-Item -Recurse -Force '.venv' -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 # --- Sync environment ---
