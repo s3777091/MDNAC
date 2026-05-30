@@ -87,6 +87,12 @@ class MDCDecoderModel(nn.Module):
         attn_mask: torch.Tensor | None = None,
         return_hidden_states: bool = False,
     ) -> torch.Tensor:
+        if isinstance(cache, torch.Tensor) and attn_mask is None:
+            raise TypeError(
+                "MDCDecoderModel.forward() received a Tensor as the second positional argument. "
+                "The second argument is cache, not attention_mask. "
+                "Call model(input_ids, attn_mask=attention_mask) instead."
+            )
         x = self.tok_emb(in_idx)
 
         if attn_mask is not None:

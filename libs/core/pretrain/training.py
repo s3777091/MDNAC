@@ -155,10 +155,10 @@ def _forward_causal_lm_batch(
     batch: CausalLMBatch,
 ) -> torch.Tensor:
     if unwrap_mdc_training_model(model_or_app) is not model_or_app:
-        return model_or_app(batch.input_ids, batch.attention_mask)
+        return model_or_app(batch.input_ids, attn_mask=batch.attention_mask)
     if hasattr(model_or_app, "forward_causal_lm_batch"):
         return model_or_app.forward_causal_lm_batch(batch)
-    return model_or_app(batch.input_ids, batch.attention_mask)
+    return model_or_app(batch.input_ids, attn_mask=batch.attention_mask)
 
 
 def _as_optimizer_list(

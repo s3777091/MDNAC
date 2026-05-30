@@ -347,5 +347,126 @@ class ProteinLMPretrainTests(unittest.TestCase):
             if original_muon is not None:
                 torch.optim.Muon = original_muon
 
+    def test_forward_with_keyword_attn_mask_succeeds(self) -> None:
+        tokenizer_artifact = build_or_load_protein_tokenizer(self.train_path, vocab_size=64)
+        base_config = build_progen_config(
+            "0.8B",
+            vocab_size=tokenizer_artifact.vocab_size,
+            context_length=12,
+            dtype=torch.float32,
+        )
+        model_config = build_mdc_config_from_progen_config(
+            {
+                **base_config,
+                "emb_dim": 32,
+                "n_heads": 4,
+                "n_layers": 2,
+                "hidden_dim": 64,
+                "head_dim": 8,
+                "n_kv_groups": 2,
+                "linear_key_head_dim": 8,
+                "linear_value_head_dim": 8,
+                "linear_num_key_heads": 2,
+                "linear_num_value_heads": 2,
+            },
+            dtype=torch.float32,
+        )
+        model = MDCDecoderModel(model_config)
+        corpus = load_protein_corpus_text(self.train_path)
+        train_text, _ = split_protein_corpus_text(corpus, train_ratio=0.67)
+        data_loader = create_protein_lm_dataloader(
+            train_text,
+            tokenizer_artifact.tokenizer,
+            context_length=12,
+            stride=6,
+            batch_size=2,
+            shuffle=False,
+        )
+        batch = next(iter(data_loader))
+        logits = model(batch.input_ids, attn_mask=batch.attention_mask)
+        self.assertEqual(logits.shape[0], batch.input_ids.shape[0])
+        self.assertEqual(logits.shape[1], batch.input_ids.shape[1])
+        self.assertEqual(logits.shape[2], tokenizer_artifact.vocab_size)
+
+    def test_positional_attention_mask_raises_type_error(self) -> None:
+        tokenizer_artifact = build_or_load_protein_tokenizer(self.train_path, vocab_size=64)
+        base_config = build_progen_config(
+            "0.8B",
+            vocab_size=tokenizer_artifact.vocab_size,
+            context_length=12,
+            dtype=torch.float32,
+        )
+        model_config = build_mdc_config_from_progen_config(
+            {
+                **base_config,
+                "emb_dim": 32,
+                "n_heads": 4,
+                "n_layers": 2,
+                "hidden_dim": 64,
+                "head_dim": 8,
+                "n_kv_groups": 2,
+                "linear_key_head_dim": 8,
+                "linear_value_head_dim": 8,
+                "linear_num_key_heads": 2,
+                "linear_num_value_heads": 2,
+            },
+            dtype=torch.float32,
+        )
+        model = MDCDecoderModel(model_config)
+        corpus = load_protein_corpus_text(self.train_path)
+        train_text, _ = split_protein_corpus_text(corpus, train_ratio=0.67)
+        data_loader = create_protein_lm_dataloader(
+            train_text,
+            tokenizer_artifact.tokenizer,
+            context_length=12,
+            stride=6,
+            batch_size=2,
+            shuffle=False,
+        )
+        batch = next(iter(data_loader))
+        with self.assertRaisesRegex(TypeError, "second argument is cache, not attention_mask"):
+            model(batch.input_ids, batch.attention_mask)
+
+    def test_forward_causal_lm_batch_uses_keyword_attn_mask(self) -> None:
+        from libs.core.pretrain.training import evaluate_mdc_causal_lm_batch_loss
+
+        tokenizer_artifact = build_or_load_protein_tokenizer(self.train_path, vocab_size=64)
+        base_config = build_progen_config(
+            "0.8B",
+            vocab_size=tokenizer_artifact.vocab_size,
+            context_length=12,
+            dtype=torch.float32,
+        )
+        model_config = build_mdc_config_from_progen_config(
+            {
+                **base_config,
+                "emb_dim": 32,
+                "n_heads": 4,
+                "n_layers": 2,
+                "hidden_dim": 64,
+                "head_dim": 8,
+                "n_kv_groups": 2,
+                "linear_key_head_dim": 8,
+                "linear_value_head_dim": 8,
+                "linear_num_key_heads": 2,
+                "linear_num_value_heads": 2,
+            },
+            dtype=torch.float32,
+        )
+        model = MDCDecoderModel(model_config)
+        corpus = load_protein_corpus_text(self.train_path)
+        train_text, _ = split_protein_corpus_text(corpus, train_ratio=0.67)
+        data_loader = create_protein_lm_dataloader(
+            train_text,
+            tokenizer_artifact.tokenizer,
+            context_length=12,
+            stride=6,
+            batch_size=2,
+            shuffle=False,
+        )
+        loss = evaluate_mdc_causal_lm_batch_loss(model, data_loader, device="cpu", max_batches=2)
+        self.assertFalse(torch.isnan(torch.tensor(loss)))
+
+
 if __name__ == "__main__":
     unittest.main()

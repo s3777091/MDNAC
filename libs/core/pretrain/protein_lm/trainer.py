@@ -503,10 +503,10 @@ class ProteinPretrainTrainer:
                 # Forward with optional autocast
                 if use_autocast:
                     with torch.amp.autocast("cuda", dtype=autocast_dtype):
-                        logits = self.model(batch.input_ids, batch.attention_mask)
+                        logits = self.model(batch.input_ids, attn_mask=batch.attention_mask)
                         loss = compute_mdc_causal_lm_loss(logits, batch.labels)
                 else:
-                    logits = self.model(batch.input_ids, batch.attention_mask)
+                    logits = self.model(batch.input_ids, attn_mask=batch.attention_mask)
                     loss = compute_mdc_causal_lm_loss(logits, batch.labels)
 
                 # Scale loss for gradient accumulation
