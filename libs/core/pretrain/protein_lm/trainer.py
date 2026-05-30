@@ -108,12 +108,17 @@ class ProteinPretrainTrainer:
         self._best_val_loss = math.inf
         self._resume_state: dict[str, Any] | None = None
 
+    def _log(self, message: str) -> None:
+        if self.runtime is None or self.runtime.is_main_process:
+            print(message, flush=True)
+
     @property
     def is_main_process(self) -> bool:
         return self.runtime is not None and self.runtime.is_main_process
 
     def train(self) -> ProteinPretrainResult:
         mode = self._resolve_mode()
+        self._log(f"🚀 Training mode: {mode}")
         if mode == "resume":
             return self._run_resume()
         return self._run_from_scratch()
@@ -134,16 +139,34 @@ class ProteinPretrainTrainer:
         return mode_name
 
     def _run_from_scratch(self) -> ProteinPretrainResult:
+        self._log("📦 [1/6] Loading tokenizer...")
         self._setup_tokenizer()
+        self._log(f"✅ Tokenizer loaded — vocab_size={self.tokenizer.vocab_size}")
+
+        self._log("🧠 [2/6] Building model...")
         self._setup_model_from_config()
+        param_count = sum(p.numel() for p in self.model.parameters())
+        self._log(f"✅ Model built — {param_count:,} parameters")
+
+        self._log("⚙️  [3/6] Preparing runtime...")
         self._setup_runtime()
+        self._log(f"✅ Device: {self.runtime.device} | Distributed: {self.runtime.distributed}")
+
+        self._log("🔧 [4/6] Creating optimizer...")
         self._setup_optimizer()
+        self._log("✅ Optimizer ready")
+
         self._save_config_snapshot()
 
+        self._log("📂 [5/6] Building data loaders...")
         train_loader, train_eval_loader, val_loader = self._build_data_loaders()
+        self._log("✅ Data loaders ready")
+
         self._init_resume_state("train_from_scratch")
 
+        self._log("🏋️ [6/6] Starting training loop...")
         self._training_loop(train_loader, train_eval_loader, val_loader)
+        self._log("🎉 Training complete!")
         return self._build_result()
 
     def _run_resume(self) -> ProteinPretrainResult:
@@ -151,15 +174,26 @@ class ProteinPretrainTrainer:
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Missing resume checkpoint: {checkpoint_path}")
 
+        self._log(f"📥 [1/6] Loading checkpoint: {checkpoint_path.name}")
         checkpoint_meta = torch.load(checkpoint_path, map_location="cpu")
         if not is_supported_protein_checkpoint_family(checkpoint_meta.get("model_family")):
             raise ValueError(
                 f"Unsupported checkpoint family: {checkpoint_meta.get('model_family')!r}"
             )
 
+        self._log("📦 [2/6] Restoring tokenizer from checkpoint...")
         self._restore_tokenizer_from_checkpoint(checkpoint_meta)
+        self._log(f"✅ Tokenizer restored — vocab_size={self.tokenizer.vocab_size}")
+
+        self._log("🧠 [3/6] Restoring model from checkpoint...")
         self._restore_model_from_checkpoint(checkpoint_meta)
+        self._log("✅ Model restored")
+
+        self._log("⚙️  [4/6] Preparing runtime...")
         self._setup_runtime()
+        self._log(f"✅ Device: {self.runtime.device}")
+
+        self._log("🔧 [5/6] Creating optimizer & restoring state...")
         self._setup_optimizer()
 
         load_protein_pretrain_checkpoint(
@@ -179,12 +213,17 @@ class ProteinPretrainTrainer:
         self._val_losses = list(checkpoint_meta.get("val_losses", []))
         best_val = checkpoint_meta.get("best_val_loss")
         self._best_val_loss = math.inf if best_val is None else float(best_val)
+        self._log(f"✅ Resumed from epoch={self._epoch} step={self._global_step} tokens={self._tokens_seen:,}")
 
         self._save_config_snapshot()
+        self._log("📂 [6/6] Building data loaders...")
         train_loader, train_eval_loader, val_loader = self._build_data_loaders()
+        self._log("✅ Data loaders ready")
         self._init_resume_state("resume")
 
+        self._log("🏋️ Resuming training loop...")
         self._training_loop(train_loader, train_eval_loader, val_loader)
+        self._log("🎉 Training complete!")
         return self._build_result()
 
     def _setup_tokenizer(self) -> None:
@@ -429,6 +468,7 @@ class ProteinPretrainTrainer:
         save_best = self._training_cfg.get("save_best", True)
         save_last = self._training_cfg.get("save_last", True)
         gradient_accumulation_steps = self._training_cfg.get("gradient_accumulation_steps", 1)
+        log_every_steps = max(1, eval_freq // 2) if eval_freq > 0 else 50
 
         optimizer_list = list(self.optimizer) if isinstance(self.optimizer, (list, tuple)) else [self.optimizer]
         step_eval_enabled = eval_freq > 0 and not self.runtime.distributed and train_eval_loader is not None
@@ -442,12 +482,16 @@ class ProteinPretrainTrainer:
         grad_scaler = torch.amp.GradScaler("cuda") if use_grad_scaler else None
 
         micro_step = 0
+        _last_loss = float("nan")
 
         for epoch_offset in range(1, num_epochs + 1):
             epoch = start_epoch + epoch_offset
             self._epoch = epoch
             set_mdc_data_loader_epoch(train_loader, epoch - 1)
             self.model.train()
+
+            max_steps_str = f"/{max_steps}" if max_steps else ""
+            self._log(f"📈 Epoch {epoch}/{start_epoch + num_epochs} | step={self._global_step}{max_steps_str} | tokens={self._tokens_seen:,}")
 
             for opt in optimizer_list:
                 opt.zero_grad(set_to_none=True)
@@ -494,12 +538,19 @@ class ProteinPretrainTrainer:
                         opt.zero_grad(set_to_none=True)
 
                     self._global_step += 1
+                    _last_loss = float(loss.item())
+
+                    if self._global_step % log_every_steps == 0:
+                        self._log(
+                            f"  🔄 step={self._global_step} | loss={_last_loss:.4f} | tokens={self._tokens_seen:,}"
+                        )
 
                     if step_eval_enabled and self._global_step % eval_freq == 0:
                         self._run_eval(train_eval_loader, val_loader, eval_batches, save_best)
 
                     if save_every_steps and self._global_step % save_every_steps == 0:
                         if self.is_main_process and save_last:
+                            self._log(f"  💾 Saving checkpoint at step {self._global_step}...")
                             self._save_last_checkpoint()
                             self._save_resume_state()
 
@@ -526,17 +577,21 @@ class ProteinPretrainTrainer:
             self._distributed_barrier()
 
             if self.is_main_process:
+                self._log(f"  📊 Epoch {epoch} end — evaluating...")
                 self._run_epoch_end_eval(train_eval_loader, val_loader, eval_batches, save_best)
                 if save_last:
+                    self._log(f"  💾 Saving epoch checkpoint...")
                     self._save_last_checkpoint()
                 self._save_resume_state()
 
             self._distributed_barrier()
 
             if max_steps is not None and self._global_step >= max_steps:
+                self._log(f"⏹️  Reached max_steps={max_steps}")
                 break
 
         if self.is_main_process and self._training_cfg.get("save_final", True):
+            self._log("💾 Saving final checkpoint...")
             self._save_final_checkpoint()
             self._save_resume_state()
 
@@ -573,7 +628,8 @@ class ProteinPretrainTrainer:
             self._save_best_checkpoint()
 
         if self.is_main_process:
-            print(f"epoch={self._epoch} step={self._global_step} train={train_eval_loss:.4f} val={val_loss:.4f}")
+            best_marker = " 🏆 new best!" if save_best and not math.isnan(metric) and metric <= self._best_val_loss else ""
+            print(f"  📊 eval step={self._global_step} | train={train_eval_loss:.4f} | val={val_loss:.4f}{best_marker}", flush=True)
 
     def _run_epoch_end_eval(self, train_eval_loader, val_loader, eval_batches: int, save_best: bool) -> None:
         device = self.runtime.device
@@ -596,7 +652,7 @@ class ProteinPretrainTrainer:
             self._best_val_loss = metric
             self._save_best_checkpoint()
 
-        print(f"epoch={self._epoch} completed train={train_eval_loss:.4f} val={val_loss:.4f}")
+        self._log(f"  ✅ Epoch {self._epoch} done | train={train_eval_loss:.4f} | val={val_loss:.4f}")
 
     def _save_last_checkpoint(self) -> Path:
         return self._save_checkpoint(self._resume_cfg["output_checkpoint_path"])
