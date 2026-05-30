@@ -4,7 +4,7 @@ mode:
 
 paths:
   train_text_path: data/compiled/refseq_bacteria_protein/train.txt
-  tokenizer_map_path: data/compiled/refseq_bacteria_protein/tokenizer_map.json
+  tokenizer_map_path: tokenizer_map.json
   checkpoint_dir: data/checkpoints/protein_from_scratch
   train_part_cache_dir: data/cache/protein_train_parts
   resume_state_path: data/checkpoints/protein_from_scratch/resume_state.json
@@ -30,9 +30,8 @@ model:
   progen_model_size: 0.8B
   context_length: 1024
   stride: 512
-  tokenizer_vocab_size: 512
+  tokenizer_vocab_size: 256
   rebuild_tokenizer: false
-  # ~200M params — fits 16GB VRAM with Muon + activations
   progen_config_overrides:
     emb_dim: 1024
     n_heads: 16
