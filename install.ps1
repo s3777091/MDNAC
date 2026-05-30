@@ -12,6 +12,17 @@ $ErrorActionPreference = "Continue"
 if ($env:PYTHON_VERSION) { $Python = $env:PYTHON_VERSION }
 if ($env:TORCH_VARIANT) { $Torch = $env:TORCH_VARIANT }
 
+# Deactivate any active venv immediately
+if ($env:VIRTUAL_ENV) {
+    $deact = Join-Path $env:VIRTUAL_ENV 'Scripts\deactivate.ps1'
+    if (Test-Path $deact) { & $deact }
+    $env:VIRTUAL_ENV = $null
+}
+
+# Remove .venv\Scripts from PATH so uv resolves from system
+$cleanPath = ($env:PATH -split ';') | Where-Object { $_ -notlike '*\.venv\*' }
+$env:PATH = $cleanPath -join ';'
+
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location $ScriptRoot
 
@@ -50,14 +61,19 @@ if (-not $uvCmd) {
     $uvCmd = Get-Command uv -ErrorAction SilentlyContinue
     if (-not $uvCmd) { Die 'uv not found after install. Reopen terminal.' }
 }
-& uv --version
+
+# Store absolute path to uv so it survives venv deletion
+$UV = $uvCmd.Source
+if (-not $UV) { $UV = (Get-Command uv).Source }
+Write-Host ('uv path: ' + $UV)
+& $UV --version
 
 # --- Ensure Python ---
 Log ('Checking Python ' + $Python)
-$pyFound = & uv python find $Python 2>$null
+$pyFound = & $UV python find $Python 2>$null
 if ($LASTEXITCODE -ne 0) {
     Log ('Installing Python ' + $Python)
-    & uv python install $Python
+    & $UV python install $Python
     if ($LASTEXITCODE -ne 0) { Die 'Python install failed' }
 }
 
@@ -83,13 +99,13 @@ if ($Recreate) {
 
 # --- Sync environment ---
 Log 'Syncing environment from uv.lock'
-& uv sync --frozen --python $Python
+& $UV sync --frozen --python $Python
 if ($LASTEXITCODE -ne 0) { Die 'uv sync failed' }
 
 # --- Ensure pip ---
 Log 'Ensuring pip'
-& uv run --no-sync python -m ensurepip --upgrade 2>$null
-& uv run --no-sync python -m pip install --upgrade pip setuptools wheel 2>$null
+& $UV run --no-sync python -m ensurepip --upgrade 2>$null
+& $UV run --no-sync python -m pip install --upgrade pip setuptools wheel 2>$null
 
 # --- Install PyTorch ---
 if ($Torch -eq 'none') {
@@ -105,7 +121,7 @@ else {
     if ($Torch -eq 'cu128') { $indexUrl = 'https://download.pytorch.org/whl/cu128' }
 
     Log ('Installing PyTorch ' + $Torch + ' from ' + $indexUrl)
-    & uv run --no-sync python -m pip install --reinstall --upgrade --index-url $indexUrl torch torchvision torchaudio
+    & $UV run --no-sync python -m pip install --reinstall --upgrade --index-url $indexUrl torch torchvision torchaudio
     if ($LASTEXITCODE -ne 0) { Die 'PyTorch install failed' }
 }
 
@@ -135,7 +151,7 @@ if ((-not $hasEnv) -and $hasExample) {
 # --- Verify ---
 if (-not $SkipVerify) {
     Log 'Verifying Python'
-    & uv run --no-sync python -c 'import sys; print(sys.version)'
+    & $UV run --no-sync python -c 'import sys; print(sys.version)'
 
     if (($Torch -eq 'cu126') -or ($Torch -eq 'cu128')) {
         Log 'Checking NVIDIA driver'
@@ -146,23 +162,23 @@ if (-not $SkipVerify) {
 
     if ($Torch -ne 'none') {
         Log 'Verifying PyTorch'
-        & uv run --no-sync python -c 'import torch; print(torch.__version__); print(torch.cuda.is_available())'
+        & $UV run --no-sync python -c 'import torch; print(torch.__version__); print(torch.cuda.is_available())'
 
         if (($Torch -eq 'cu126') -or ($Torch -eq 'cu128')) {
-            & uv run --no-sync python -c 'import torch; assert torch.cuda.is_available(); x=torch.randn(256,256,device=chr(99)+chr(117)+chr(100)+chr(97)); print(x.device)'
+            & $UV run --no-sync python -c 'import torch; assert torch.cuda.is_available(); x=torch.randn(256,256,device=chr(99)+chr(117)+chr(100)+chr(97)); print(x.device)'
             if ($LASTEXITCODE -ne 0) { Warn 'GPU test failed' }
         }
     }
 
     Log 'Verifying project import'
-    & uv run --no-sync python -c 'from libs.data.config import DataConfig; print(DataConfig)'
+    & $UV run --no-sync python -c 'from libs.data.config import DataConfig; print(DataConfig)'
 }
 
 # --- Jupyter kernel ---
 if (-not $SkipKernel) {
     Log 'Installing Jupyter kernel'
-    & uv run --no-sync python -m pip install --upgrade ipykernel 2>$null
-    & uv run --no-sync python -m ipykernel install --user --name microbial-dna-compiler --display-name 'Microbial DNA Compiler (uv GPU)'
+    & $UV run --no-sync python -m pip install --upgrade ipykernel 2>$null
+    & $UV run --no-sync python -m ipykernel install --user --name microbial-dna-compiler --display-name 'Microbial DNA Compiler (uv GPU)'
 }
 
 # --- Done ---
