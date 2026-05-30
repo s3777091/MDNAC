@@ -11,6 +11,7 @@ import torch
 
 from libs.core.mdc import MDCDecoderModel
 from libs.core.pretrain.protein_lm.memory import (
+    _cuda_total_memory_bytes,
     estimate_protein_pretrain_memory,
     recommend_16gb_train_config,
     run_preflight_vram_check,
@@ -539,6 +540,52 @@ class TestFastPathInEstimate(unittest.TestCase):
         self.assertIn("missing_fast_path_libs", estimate)
         self.assertIsInstance(estimate["fast_path_available"], bool)
         self.assertIsInstance(estimate["missing_fast_path_libs"], list)
+
+
+class TestCudaTotalMemoryBytes(unittest.TestCase):
+    """Test _cuda_total_memory_bytes helper with mock device properties."""
+
+    def test_total_memory_attr(self) -> None:
+        """Standard PyTorch: props.total_memory exists."""
+
+        class FakeProps:
+            total_memory = 16 * 1024**3
+
+        with patch("torch.cuda.get_device_properties", return_value=FakeProps()):
+            result = _cuda_total_memory_bytes(torch.device("cuda", 0))
+        self.assertEqual(16 * 1024**3, result)
+
+    def test_total_mem_fallback(self) -> None:
+        """Backward compat: only props.total_mem exists."""
+
+        class FakeOldProps:
+            total_mem = 16 * 1024**3
+
+        with patch("torch.cuda.get_device_properties", return_value=FakeOldProps()):
+            result = _cuda_total_memory_bytes(torch.device("cuda", 0))
+        self.assertEqual(16 * 1024**3, result)
+
+    def test_mem_get_info_fallback(self) -> None:
+        """Neither attr exists — falls back to mem_get_info."""
+
+        class FakeEmptyProps:
+            pass
+
+        with patch("torch.cuda.get_device_properties", return_value=FakeEmptyProps()), \
+             patch("torch.cuda.mem_get_info", return_value=(8 * 1024**3, 16 * 1024**3)):
+            result = _cuda_total_memory_bytes(torch.device("cuda", 0))
+        self.assertEqual(16 * 1024**3, result)
+
+    def test_all_fail_raises(self) -> None:
+        """All methods fail — raises AttributeError."""
+
+        class FakeEmptyProps:
+            pass
+
+        with patch("torch.cuda.get_device_properties", return_value=FakeEmptyProps()), \
+             patch("torch.cuda.mem_get_info", side_effect=RuntimeError("no device")):
+            with self.assertRaises(AttributeError):
+                _cuda_total_memory_bytes(torch.device("cuda", 0))
 
 
 if __name__ == "__main__":

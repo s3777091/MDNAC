@@ -28,6 +28,22 @@ from libs.core.pretrain.protein_lm.support.backbone import (
 from libs.data.training.tokenizer import SequenceTokenizer
 
 
+def _cuda_total_memory_bytes(device: torch.device) -> int:
+    """Return total GPU memory in bytes, with fallback for older PyTorch builds."""
+    props = torch.cuda.get_device_properties(device)
+    if hasattr(props, "total_memory"):
+        return int(props.total_memory)
+    if hasattr(props, "total_mem"):
+        return int(props.total_mem)
+    try:
+        _, total = torch.cuda.mem_get_info(device)
+        return int(total)
+    except Exception as exc:
+        raise AttributeError(
+            "Could not determine CUDA total memory from device properties."
+        ) from exc
+
+
 def _bytes_per_element(dtype: torch.dtype) -> int:
     return torch.tensor([], dtype=dtype).element_size()
 
@@ -598,8 +614,15 @@ def run_preflight_vram_check(
         result["note"] = "Preflight skipped: no CUDA device. Using estimates only."
         return result
 
-    total_vram = torch.cuda.get_device_properties(resolved_device).total_mem
+    # Normalize device index for bare "cuda" without index
+    if resolved_device.index is None:
+        resolved_device = torch.device("cuda", torch.cuda.current_device())
+
+    total_vram = _cuda_total_memory_bytes(resolved_device)
+    free_bytes, total_bytes = torch.cuda.mem_get_info(resolved_device)
     result["total_vram_gb"] = total_vram / (1024**3)
+    result["current_free_vram_gb"] = free_bytes / (1024**3)
+    result["current_used_vram_gb"] = (total_bytes - free_bytes) / (1024**3)
 
     # Resolve autocast dtype
     autocast_dtype = None
