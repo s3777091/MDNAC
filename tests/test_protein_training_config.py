@@ -180,6 +180,137 @@ class ProteinTrainingConfigTests(unittest.TestCase):
         self.assertEqual(0.2, optimizer[0].param_groups[0]["weight_decay"])
         self.assertEqual(0.2, optimizer[1].param_groups[0]["weight_decay"])
 
+    def test_default_optimizer_is_muon_when_type_missing(self) -> None:
+        (self.root / "train.yaml").write_text(
+            (
+                "model:\n"
+                "  context_length: 64\n"
+                "  stride: 32\n"
+                "optimizer:\n"
+                "  learning_rate: 0.001\n"
+                "  weight_decay: 0.1\n"
+            ),
+            encoding="utf-8",
+        )
+        config = load_protein_training_config(self.root)
+        self.assertEqual("muon", config["optimizer"]["type"])
+
+    def test_explicit_adamw_still_works(self) -> None:
+        (self.root / "train.yaml").write_text(
+            (
+                "model:\n"
+                "  context_length: 64\n"
+                "  stride: 32\n"
+                "optimizer:\n"
+                "  type: adamw\n"
+                "  learning_rate: 0.001\n"
+            ),
+            encoding="utf-8",
+        )
+        config = load_protein_training_config(self.root)
+        self.assertEqual("adamw", config["optimizer"]["type"])
+
+        model = torch.nn.Sequential(torch.nn.Embedding(8, 4), torch.nn.Linear(4, 4))
+        optimizer = create_protein_training_optimizer(model, config["optimizer"], device="cpu")
+        self.assertIsInstance(optimizer, torch.optim.AdamW)
+
+    def test_loads_mode_section(self) -> None:
+        (self.root / "train.yaml").write_text(
+            (
+                "mode:\n"
+                "  name: auto\n"
+                "  resume_if_available: true\n"
+                "model:\n"
+                "  context_length: 64\n"
+                "  stride: 32\n"
+            ),
+            encoding="utf-8",
+        )
+        config = load_protein_training_config(self.root)
+        self.assertEqual("auto", config["mode"]["name"])
+        self.assertTrue(config["mode"]["resume_if_available"])
+
+    def test_resolves_resume_state_and_metrics_paths(self) -> None:
+        (self.root / "train.yaml").write_text(
+            (
+                "paths:\n"
+                "  checkpoint_dir: data/ckpt\n"
+                "  resume_state_path: data/ckpt/resume_state.json\n"
+                "  metrics_history_path: data/ckpt/metrics.jsonl\n"
+                "model:\n"
+                "  context_length: 64\n"
+                "  stride: 32\n"
+            ),
+            encoding="utf-8",
+        )
+        config = load_protein_training_config(self.root)
+        self.assertEqual(
+            (self.root / "data/ckpt/resume_state.json").resolve(),
+            config["paths"]["resume_state_path"],
+        )
+        self.assertEqual(
+            (self.root / "data/ckpt/metrics.jsonl").resolve(),
+            config["paths"]["metrics_history_path"],
+        )
+
+    def test_validates_mixed_precision(self) -> None:
+        (self.root / "train.yaml").write_text(
+            (
+                "model:\n"
+                "  context_length: 64\n"
+                "  stride: 32\n"
+                "runtime:\n"
+                "  mixed_precision: bf16\n"
+            ),
+            encoding="utf-8",
+        )
+        config = load_protein_training_config(self.root)
+        self.assertEqual("bf16", config["runtime"]["mixed_precision"])
+
+    def test_loads_new_training_fields(self) -> None:
+        (self.root / "train.yaml").write_text(
+            (
+                "model:\n"
+                "  context_length: 64\n"
+                "  stride: 32\n"
+                "training:\n"
+                "  max_steps: 500\n"
+                "  save_every_steps: 50\n"
+                "  save_last: true\n"
+                "  save_best: true\n"
+                "  save_final: false\n"
+            ),
+            encoding="utf-8",
+        )
+        config = load_protein_training_config(self.root)
+        self.assertEqual(500, config["training"]["max_steps"])
+        self.assertEqual(50, config["training"]["save_every_steps"])
+        self.assertTrue(config["training"]["save_last"])
+        self.assertTrue(config["training"]["save_best"])
+        self.assertFalse(config["training"]["save_final"])
+
+    def test_loads_new_data_fields(self) -> None:
+        (self.root / "train.yaml").write_text(
+            (
+                "model:\n"
+                "  context_length: 64\n"
+                "  stride: 32\n"
+                "data:\n"
+                "  cleanup_completed_parts: true\n"
+                "  validate_cached_parts: false\n"
+                "  shuffle_parts: true\n"
+                "  shuffle_examples: false\n"
+                "  shuffle_buffer_size: 4096\n"
+            ),
+            encoding="utf-8",
+        )
+        config = load_protein_training_config(self.root)
+        self.assertTrue(config["data"]["cleanup_completed_parts"])
+        self.assertFalse(config["data"]["validate_cached_parts"])
+        self.assertTrue(config["data"]["shuffle_parts"])
+        self.assertFalse(config["data"]["shuffle_examples"])
+        self.assertEqual(4096, config["data"]["shuffle_buffer_size"])
+
 
 if __name__ == "__main__":
     unittest.main()

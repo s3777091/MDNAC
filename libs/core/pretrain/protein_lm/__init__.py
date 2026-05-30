@@ -20,6 +20,13 @@ from .core import (
     save_protein_pretrain_checkpoint,
     split_protein_corpus_text,
 )
+from .resume_state import (
+    create_resume_state,
+    load_resume_state,
+    save_resume_state,
+    update_resume_state_metrics,
+    update_resume_state_progress,
+)
 from .support.backbone import (
     DEFAULT_PROGEN_MODEL_NAME,
     LEGACY_PROTEIN_MODEL_FAMILY,
@@ -32,6 +39,7 @@ from .support.backbone import (
     extract_protein_backbone_config,
     is_supported_protein_checkpoint_family,
 )
+from .trainer import ProteinPretrainResult, ProteinPretrainTrainer
 
 __all__ = [
     "DEFAULT_PROGEN_MODEL_NAME",
@@ -42,6 +50,8 @@ __all__ = [
     "ProteinCausalLMExample",
     "ProteinCausalLMStreamingTextDataset",
     "ProteinCausalLMTextDataset",
+    "ProteinPretrainResult",
+    "ProteinPretrainTrainer",
     "ProteinTokenizerArtifact",
     "PROGEN_BACKBONE_FAMILY",
     "PROGEN_MODEL_ALIASES",
@@ -53,6 +63,7 @@ __all__ = [
     "build_progen_config",
     "count_trainable_parameters",
     "create_protein_lm_dataloader",
+    "create_resume_state",
     "create_streaming_protein_lm_dataloader",
     "discover_protein_train_text_paths",
     "extract_protein_backbone_config",
@@ -62,6 +73,10 @@ __all__ = [
     "load_protein_corpus_text_parts",
     "load_protein_pretrain_checkpoint",
     "load_protein_pretrain_checkpoint_for_profile_tuning",
+    "load_resume_state",
     "save_protein_pretrain_checkpoint",
+    "save_resume_state",
     "split_protein_corpus_text",
+    "update_resume_state_metrics",
+    "update_resume_state_progress",
 ]

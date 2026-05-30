@@ -53,13 +53,44 @@ def load_protein_training_config(
         default=True,
     )
 
+    resume_state_path = _as_project_path(
+        _nested_get(config_mapping, "paths", "resume_state_path")
+        or checkpoint_dir / "resume_state.json",
+        project_root=resolved_project_root,
+    )
+    metrics_history_path = _as_project_path(
+        _nested_get(config_mapping, "paths", "metrics_history_path")
+        or checkpoint_dir / "metrics_history.jsonl",
+        project_root=resolved_project_root,
+    )
+    training_config_snapshot_path = _as_project_path(
+        _nested_get(config_mapping, "paths", "training_config_snapshot_path")
+        or checkpoint_dir / "training_config.snapshot.json",
+        project_root=resolved_project_root,
+    )
+
+    mode_name = str(_nested_get(config_mapping, "mode", "name") or "train_from_scratch")
+    if mode_name not in {"train_from_scratch", "resume", "auto"}:
+        raise ValueError("mode.name must be one of: train_from_scratch, resume, auto")
+    resume_if_available = _bool_value(
+        _nested_get(config_mapping, "mode", "resume_if_available"),
+        True,
+    )
+
     resolved_config: dict[str, Any] = {
         "config_path": resolved_config_path,
+        "mode": {
+            "name": mode_name,
+            "resume_if_available": resume_if_available,
+        },
         "paths": {
             "train_text_path": train_text_path,
             "tokenizer_map_path": tokenizer_map_path,
             "checkpoint_dir": checkpoint_dir,
             "train_part_cache_dir": train_part_cache_dir,
+            "resume_state_path": resume_state_path,
+            "metrics_history_path": metrics_history_path,
+            "training_config_snapshot_path": training_config_snapshot_path,
         },
         "data": {
             "train_part_glob": str(_nested_get(config_mapping, "data", "train_part_glob") or "train_part_*.txt"),
@@ -75,10 +106,27 @@ def load_protein_training_config(
                 _nested_get(config_mapping, "data", "keep_downloaded_train_parts"),
                 False,
             ),
+            "cleanup_completed_parts": _bool_value(
+                _nested_get(config_mapping, "data", "cleanup_completed_parts"),
+                False,
+            ),
+            "validate_cached_parts": _bool_value(
+                _nested_get(config_mapping, "data", "validate_cached_parts"),
+                True,
+            ),
             "train_ratio": float(_nested_get(config_mapping, "data", "train_ratio") or 0.9),
             "batch_size": int(_nested_get(config_mapping, "data", "batch_size") or 2),
             "num_workers": int(_nested_get(config_mapping, "data", "num_workers") or 0),
             "pin_memory": pin_memory,
+            "shuffle_parts": _bool_value(
+                _nested_get(config_mapping, "data", "shuffle_parts"),
+                False,
+            ),
+            "shuffle_examples": _bool_value(
+                _nested_get(config_mapping, "data", "shuffle_examples"),
+                True,
+            ),
+            "shuffle_buffer_size": int(_nested_get(config_mapping, "data", "shuffle_buffer_size") or 8192),
         },
         "model": {
             "progen_model_size": str(_nested_get(config_mapping, "model", "progen_model_size") or "0.8B"),
@@ -109,15 +157,32 @@ def load_protein_training_config(
         },
         "training": {
             "num_epochs": int(_nested_get(config_mapping, "training", "num_epochs") or 1),
+            "max_steps": _optional_int(_nested_get(config_mapping, "training", "max_steps")),
+            "save_every_steps": _optional_int(
+                _nested_get(config_mapping, "training", "save_every_steps"),
+                default=100,
+            ),
             "grad_clip_norm": _optional_float(
                 _nested_get(config_mapping, "training", "grad_clip_norm"),
                 default=1.0,
             ),
             "eval_freq": int(_nested_get(config_mapping, "training", "eval_freq") or 50),
             "eval_batches": int(_nested_get(config_mapping, "training", "eval_batches") or 10),
+            "save_last": _bool_value(
+                _nested_get(config_mapping, "training", "save_last"),
+                True,
+            ),
+            "save_best": _bool_value(
+                _nested_get(config_mapping, "training", "save_best"),
+                True,
+            ),
+            "save_final": _bool_value(
+                _nested_get(config_mapping, "training", "save_final"),
+                True,
+            ),
         },
         "optimizer": {
-            "type": _normalize_optimizer_type(_nested_get(config_mapping, "optimizer", "type") or "adamw"),
+            "type": _normalize_optimizer_type(_nested_get(config_mapping, "optimizer", "type") or "muon"),
             "learning_rate": float(_nested_get(config_mapping, "optimizer", "learning_rate") or 3e-4),
             "muon_learning_rate": _optional_float(_nested_get(config_mapping, "optimizer", "muon_learning_rate")),
             "weight_decay": float(_nested_get(config_mapping, "optimizer", "weight_decay") or 0.1),
@@ -132,6 +197,9 @@ def load_protein_training_config(
             ),
             "data_parallel_device_ids": _int_sequence_or_none(
                 _nested_get(config_mapping, "runtime", "data_parallel_device_ids")
+            ),
+            "mixed_precision": _resolve_mixed_precision(
+                _nested_get(config_mapping, "runtime", "mixed_precision")
             ),
         },
         "resume": {
@@ -150,6 +218,11 @@ def load_protein_training_config(
                 or checkpoint_dir / "checkpoint_best.pt",
                 project_root=resolved_project_root,
             ),
+            "final_checkpoint_path": _as_project_path(
+                _nested_get(config_mapping, "resume", "final_checkpoint_path")
+                or checkpoint_dir / "checkpoint_final.pt",
+                project_root=resolved_project_root,
+            ),
             "restore_optimizer_state": _bool_value(
                 _nested_get(config_mapping, "resume", "restore_optimizer_state"),
                 True,
@@ -158,10 +231,16 @@ def load_protein_training_config(
                 _nested_get(config_mapping, "resume", "override_optimizer_hyperparameters"),
                 True,
             ),
+            "resume_state_path": _as_project_path(
+                _nested_get(config_mapping, "resume", "resume_state_path")
+                or resume_state_path,
+                project_root=resolved_project_root,
+            ),
         },
         "minio": {
             "train_parts_prefix_uri": str(_nested_get(config_mapping, "minio", "train_parts_prefix_uri") or ""),
             "train_part_uris": _string_sequence(_nested_get(config_mapping, "minio", "train_part_uris")),
+            "manifest_uri": _optional_string(_nested_get(config_mapping, "minio", "manifest_uri")),
             "endpoint_url": _optional_string(_nested_get(config_mapping, "minio", "endpoint_url")),
             "access_key": _optional_string(_nested_get(config_mapping, "minio", "access_key")),
             "secret_key": _optional_string(_nested_get(config_mapping, "minio", "secret_key")),
@@ -216,7 +295,7 @@ def create_protein_training_optimizer(
     *,
     device: torch.device | str,
 ) -> torch.optim.Optimizer | list[torch.optim.Optimizer]:
-    optimizer_type = _normalize_optimizer_type(optimizer_config.get("type") or "adamw")
+    optimizer_type = _normalize_optimizer_type(optimizer_config.get("type") or "muon")
     learning_rate = float(optimizer_config.get("learning_rate") or 3e-4)
     weight_decay = float(optimizer_config.get("weight_decay") or 0.1)
 
@@ -244,7 +323,7 @@ def apply_protein_training_optimizer_settings(
     optimizer: torch.optim.Optimizer | Sequence[torch.optim.Optimizer],
     optimizer_config: Mapping[str, Any],
 ) -> None:
-    optimizer_type = _normalize_optimizer_type(optimizer_config.get("type") or "adamw")
+    optimizer_type = _normalize_optimizer_type(optimizer_config.get("type") or "muon")
     adamw_learning_rate = float(optimizer_config.get("learning_rate") or 3e-4)
     muon_learning_rate = _optional_float(optimizer_config.get("muon_learning_rate"), default=adamw_learning_rate)
     weight_decay = float(optimizer_config.get("weight_decay") or 0.1)
@@ -362,6 +441,15 @@ def _normalize_device(value: Any) -> str:
     resolved = str(value).strip().lower()
     if resolved not in {"auto", "cpu", "cuda"}:
         raise ValueError("runtime.device must be one of: auto, cpu, cuda")
+    return resolved
+
+
+def _resolve_mixed_precision(value: Any) -> str:
+    if value is None:
+        return "auto"
+    resolved = str(value).strip().lower()
+    if resolved not in {"auto", "no", "fp16", "bf16"}:
+        raise ValueError("runtime.mixed_precision must be one of: auto, no, fp16, bf16")
     return resolved
 
 

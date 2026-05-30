@@ -60,14 +60,44 @@ The compiler is append-only. Re-running against the same output directory append
 
 ## Protein Pretraining
 
-Stage 2 notebooks now use the protein-only flow:
+The primary notebook is now:
+
+- **`notebooks/stage_2_foundation_model/protein_pretrain.ipynb`** — unified training notebook
+
+Legacy notebooks (kept for backward compatibility):
 
 - `notebooks/stage_2_foundation_model/03_pretrain_protein_from_scratch.ipynb`
 - `notebooks/stage_2_foundation_model/04_resume_protein_pretrain.ipynb`
 - `notebooks/stage_2_foundation_model/06_model_evaluation/06_top1_benchmark.ipynb`
 - `notebooks/stage_2_foundation_model/06_model_evaluation/07_plot_metrics.ipynb`
 
-The pretrain and resume notebooks now load shared paths, model settings, optimizer choice (`adamw` or `muon`), multi-GPU options, and optional MinIO overrides from `train.yaml` at the repo root. Keep sensitive MinIO credentials in `.env` or environment variables and only put non-secret endpoint or bucket overrides in `train.yaml` when needed.
+### Configuration
+
+The unified notebook accepts `train.yaml` via three options:
+
+1. **Default** — uses `train.yaml` at the repo root.
+2. **Upload** — upload a custom YAML file (supports Colab, ipywidgets, or path input).
+3. **Custom path** — specify an arbitrary filesystem path.
+
+### Training Modes
+
+| Mode | Description |
+|------|-------------|
+| `train_from_scratch` | Build tokenizer, create model, train from epoch 0 |
+| `resume` | Restore from checkpoint and continue training |
+| `auto` | Resume if checkpoint/resume_state.json exists, otherwise train from scratch |
+
+### Key Features
+
+- **Muon optimizer** is the default (`optimizer.type: muon`). Only use AdamW when explicitly set.
+- **MinIO streaming** downloads parts on demand (one at a time), not the full dataset upfront.
+- **`resume_state.json`** tracks progress (epoch, step, tokens, completed parts) for resumable runs.
+- **`metrics_history.jsonl`** appends eval metrics at each checkpoint.
+- **Supports**: CPU, single GPU, DataParallel, DDP (via torchrun).
+
+All training logic lives in `libs.core.pretrain.protein_lm.trainer.ProteinPretrainTrainer`, which reuses existing helpers from `libs.core`.
+
+The pretrain notebook loads shared paths, model settings, optimizer choice (`muon` default), multi-GPU options, and optional MinIO overrides from `train.yaml` at the repo root. Keep sensitive MinIO credentials in `.env` or environment variables and only put non-secret endpoint or bucket overrides in `train.yaml` when needed.
 
 The notebooks call `libs.core` helpers to build or load the protein `SequenceTokenizer`, create causal-LM batches from `train.txt`, instantiate ProGen backbone configs for the MDC decoder, save/load resumable `progen_protein_lm` checkpoints, and benchmark protein next-token accuracy.
 

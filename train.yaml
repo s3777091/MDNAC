@@ -1,18 +1,30 @@
+mode:
+  name: train_from_scratch
+  resume_if_available: true
+
 paths:
   train_text_path: data/compiled/refseq_bacteria_protein/train.txt
   tokenizer_map_path: data/compiled/refseq_bacteria_protein/tokenizer_map.json
   checkpoint_dir: data/checkpoints/protein_from_scratch
   train_part_cache_dir: data/cache/protein_train_parts
+  resume_state_path: data/checkpoints/protein_from_scratch/resume_state.json
+  metrics_history_path: data/checkpoints/protein_from_scratch/metrics_history.jsonl
+  training_config_snapshot_path: data/checkpoints/protein_from_scratch/training_config.snapshot.json
 
 data:
   train_part_glob: train_part_*.txt
   prefer_local_train_parts: true
   stream_local_train_parts: true
   keep_downloaded_train_parts: false
+  cleanup_completed_parts: false
+  validate_cached_parts: true
   train_ratio: 0.9
   batch_size: 2
   num_workers: 0
   pin_memory: auto
+  shuffle_parts: false
+  shuffle_examples: true
+  shuffle_buffer_size: 8192
 
 model:
   progen_model_size: 0.8B
@@ -34,9 +46,14 @@ model:
 
 training:
   num_epochs: 1
-  grad_clip_norm: 1.0
+  max_steps: null
+  save_every_steps: 100
   eval_freq: 50
   eval_batches: 10
+  grad_clip_norm: 1.0
+  save_last: true
+  save_best: true
+  save_final: true
 
 optimizer:
   type: muon
@@ -50,17 +67,21 @@ runtime:
   multi_gpu_mode: auto
   ddp_find_unused_parameters: false
   data_parallel_device_ids: null
+  mixed_precision: auto
 
 resume:
   checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_last.pt
   output_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_last.pt
   best_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
+  final_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_final.pt
   restore_optimizer_state: true
   override_optimizer_hyperparameters: true
+  resume_state_path: data/checkpoints/protein_from_scratch/resume_state.json
 
 minio:
   train_parts_prefix_uri: s3://microbial-dna-compiler/data/protein/parts
   train_part_uris: []
+  manifest_uri: null
   endpoint_url: https://s3.phuongdong.cloud
   access_key: null
   secret_key: null

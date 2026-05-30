@@ -154,6 +154,7 @@ def downloaded_minio_text_part(
     config: DataConfig | None = None,
     cache_dir: Path | str | None = None,
     keep_downloaded_parts: bool = False,
+    validate_cached: bool = True,
 ) -> Iterator[Path]:
     if keep_downloaded_parts and cache_dir is None:
         raise ValueError("cache_dir is required when keep_downloaded_parts=True.")
@@ -168,7 +169,11 @@ def downloaded_minio_text_part(
         target_dir.mkdir(parents=True, exist_ok=True)
 
     target_path = _part_cache_path(part, target_dir)
-    if not target_path.exists():
+    if target_path.exists():
+        if validate_cached and not _validate_cached_part(part, target_path):
+            target_path.unlink(missing_ok=True)
+            _download_s3_object(client, part, target_path)
+    else:
         _download_s3_object(client, part, target_path)
 
     try:
@@ -178,6 +183,14 @@ def downloaded_minio_text_part(
             target_path.unlink(missing_ok=True)
         if temp_dir is not None:
             shutil.rmtree(temp_dir, ignore_errors=True)
+
+
+def _validate_cached_part(part: S3TextPart, local_path: Path) -> bool:
+    if part.size is not None:
+        local_size = local_path.stat().st_size
+        if local_size != part.size:
+            return False
+    return True
 
 
 def _is_text_part_key(
