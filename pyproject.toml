@@ -32,7 +32,18 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["libs*"]
+include = ["libs*", "src*"]
+
+[tool.setuptools.package-dir]
+"" = "."
+
+[project.scripts]
+mdnac-build-refseq = "src.mdnac.interfaces.cli:build_refseq_profile_text"
+mdnac-concat = "src.mdnac.interfaces.cli:concat_text_files"
+mdnac-dedupe-refseq = "src.mdnac.interfaces.cli:dedupe_refseq_profile_text"
+mdnac-downsample = "src.mdnac.interfaces.cli:downsample_instruction_jsonl"
+mdnac-build-profile-pretrain = "src.mdnac.interfaces.cli:build_profile_pretrain_from_instruction_jsonl"
+mdnac-download-index = "src.mdnac.interfaces.cli:download_http_index"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

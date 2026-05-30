@@ -10,11 +10,11 @@ from libs.data.contracts import HttpTransport, SequenceSource
 from libs.data.entities import FetchRequest, SequenceRecord
 from libs.data.utilities.exceptions import DataNotFoundError, SourceConfigurationError
 from libs.data.utilities.parsers import parse_fasta
+from libs.data.utilities.retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
 
-_NCBI_EMPTY_RESPONSE_MAX_RETRIES = 3
-_NCBI_EMPTY_RESPONSE_BACKOFF_BASE = 5.0
+_NCBI_RETRY_POLICY = RetryPolicy(max_retries=3, backoff_base=5.0)
 
 
 @dataclass(slots=True, frozen=True)
@@ -213,11 +213,11 @@ class NcbiSequenceSource(SequenceSource):
 
             if not page_accessions:
                 consecutive_empty_pages += 1
-                if consecutive_empty_pages <= _NCBI_EMPTY_RESPONSE_MAX_RETRIES:
-                    delay = _NCBI_EMPTY_RESPONSE_BACKOFF_BASE * consecutive_empty_pages
+                if consecutive_empty_pages <= _NCBI_RETRY_POLICY.max_retries:
+                    delay = _NCBI_RETRY_POLICY.backoff_base * consecutive_empty_pages
                     logger.warning(
                         "NCBI esearch returned empty page at retstart=%d (attempt %d/%d), retrying in %.0fs",
-                        retstart, consecutive_empty_pages, _NCBI_EMPTY_RESPONSE_MAX_RETRIES, delay,
+                        retstart, consecutive_empty_pages, _NCBI_RETRY_POLICY.max_retries, delay,
                     )
                     time.sleep(delay)
                     continue
@@ -243,14 +243,14 @@ class NcbiSequenceSource(SequenceSource):
             }
         )
         result: dict = {}
-        for retry in range(_NCBI_EMPTY_RESPONSE_MAX_RETRIES + 1):
+        for retry in range(_NCBI_RETRY_POLICY.max_retries + 1):
             response_text = self._transport.get_text(self._ESUMMARY_URL, params=params)
             if not response_text or not response_text.strip():
-                if retry < _NCBI_EMPTY_RESPONSE_MAX_RETRIES:
-                    delay = _NCBI_EMPTY_RESPONSE_BACKOFF_BASE * (retry + 1)
+                if retry < _NCBI_RETRY_POLICY.max_retries:
+                    delay = _NCBI_RETRY_POLICY.backoff_base * (retry + 1)
                     logger.warning(
                         "NCBI esummary returned empty response (attempt %d/%d), retrying in %.0fs",
-                        retry + 1, _NCBI_EMPTY_RESPONSE_MAX_RETRIES + 1, delay,
+                        retry + 1, _NCBI_RETRY_POLICY.max_retries + 1, delay,
                     )
                     time.sleep(delay)
                     continue
@@ -258,11 +258,11 @@ class NcbiSequenceSource(SequenceSource):
             try:
                 payload = json.loads(response_text)
             except json.JSONDecodeError:
-                if retry < _NCBI_EMPTY_RESPONSE_MAX_RETRIES:
-                    delay = _NCBI_EMPTY_RESPONSE_BACKOFF_BASE * (retry + 1)
+                if retry < _NCBI_RETRY_POLICY.max_retries:
+                    delay = _NCBI_RETRY_POLICY.backoff_base * (retry + 1)
                     logger.warning(
                         "NCBI esummary returned invalid JSON (attempt %d/%d), retrying in %.0fs",
-                        retry + 1, _NCBI_EMPTY_RESPONSE_MAX_RETRIES + 1, delay,
+                        retry + 1, _NCBI_RETRY_POLICY.max_retries + 1, delay,
                     )
                     time.sleep(delay)
                     continue

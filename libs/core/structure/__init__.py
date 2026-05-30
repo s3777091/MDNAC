@@ -11,23 +11,25 @@ from .geometry import (
     triangle_consistency_score,
     triangle_inequality_violation_rate,
 )
+from .annotate_s3 import (
+    S3Instruction3DiPartSummary,
+    S3Instruction3DiUpdateSummary,
+    annotate_s3_instruction_jsonl_3di,
+)
+from .cache import Sequence3DiCache
 from .instruction_3di import (
     AA_TO_3DI_PREFIX,
     DEFAULT_3DI_FIELD,
     DEFAULT_PROSTT5_MODEL_NAME,
     Instruction3DiUpdateSummary,
-    ProstT5Structure3DiProvider,
-    S3Instruction3DiPartSummary,
-    S3Instruction3DiUpdateSummary,
-    Sequence3DiCache,
     Structure3DiBatchProvider,
     annotate_instruction_jsonl_3di,
-    annotate_s3_instruction_jsonl_3di,
     extract_instruction_protein_sequence,
     normalize_3di_structure,
     normalize_prostt5_aa_sequence,
     usable_instruction_3di,
 )
+from .prostt5_provider import ProstT5Structure3DiProvider
 from .providers import recommended_structure_providers
 from .scoring import (
     ambiguity_fraction,

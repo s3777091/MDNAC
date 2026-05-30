@@ -38,41 +38,16 @@ class MicrobialDataHub:
     ) -> TrainingDatasetArtifact:
         resolved_sequence_type = _normalize_sequence_type(sequence_type)
         effective_request = self._with_default_batch_size(request)
-        source = self._sources.get(source_name)
-        if source is None:
-            available_sources = ", ".join(sorted(self._sources))
-            raise SourceConfigurationError(
-                f"Unknown source '{source_name}'. Available sources: {available_sources}"
-            )
+        source = self._resolve_source(source_name)
 
         fetched_records = source.fetch(effective_request)
-        normalization_config = normalization or SequenceNormalizationConfig(sequence_type=resolved_sequence_type)
-        normalized_records, report = normalize_records(fetched_records, normalization_config)
-        if not normalized_records:
-            raise DataNotFoundError(
-                f"All fetched records were filtered out while preparing training data for '{request.dataset_name}'"
-            )
-
-        dataset_artifact = self._dataset_manager.save_records(
+        return self._normalize_save_and_build_artifact(
             source_name=source_name,
             request=effective_request,
-            records=normalized_records,
+            records=fetched_records,
+            sequence_type=resolved_sequence_type,
             merge_strategy=merge_strategy,
-        )
-        tokenizer = SequenceTokenizer.from_records(normalized_records)
-        return TrainingDatasetArtifact(
-            source_name=dataset_artifact.source_name,
-            dataset_name=dataset_artifact.dataset_name,
-            storage_mode=dataset_artifact.storage_mode,
-            snapshot_id=dataset_artifact.snapshot_id,
-            current_location=dataset_artifact.current_location,
-            train_txt_path=dataset_artifact.file_locations["train.txt"],
-            tokenizer_map_path=dataset_artifact.file_locations["tokenizer_map.json"],
-            record_count=dataset_artifact.record_count,
-            dropped_record_count=report.dropped_count,
-            sequence_type=tokenizer.sequence_type,
-            vocab_size=tokenizer.vocab_size,
-            history_location=dataset_artifact.history_location,
+            normalization=normalization,
         )
 
     def add_records(
@@ -86,33 +61,13 @@ class MicrobialDataHub:
     ) -> TrainingDatasetArtifact:
         resolved_sequence_type = _normalize_sequence_type(sequence_type)
         effective_request = self._with_default_batch_size(request)
-        normalization_config = normalization or SequenceNormalizationConfig(sequence_type=resolved_sequence_type)
-        normalized_records, report = normalize_records(records, normalization_config)
-        if not normalized_records:
-            raise DataNotFoundError(
-                f"All provided records were filtered out while preparing training data for '{request.dataset_name}'"
-            )
-
-        dataset_artifact = self._dataset_manager.save_records(
+        return self._normalize_save_and_build_artifact(
             source_name=source_name,
             request=effective_request,
-            records=normalized_records,
+            records=records,
+            sequence_type=resolved_sequence_type,
             merge_strategy=merge_strategy,
-        )
-        tokenizer = SequenceTokenizer.from_records(normalized_records)
-        return TrainingDatasetArtifact(
-            source_name=dataset_artifact.source_name,
-            dataset_name=dataset_artifact.dataset_name,
-            storage_mode=dataset_artifact.storage_mode,
-            snapshot_id=dataset_artifact.snapshot_id,
-            current_location=dataset_artifact.current_location,
-            train_txt_path=dataset_artifact.file_locations["train.txt"],
-            tokenizer_map_path=dataset_artifact.file_locations["tokenizer_map.json"],
-            record_count=dataset_artifact.record_count,
-            dropped_record_count=report.dropped_count,
-            sequence_type=tokenizer.sequence_type,
-            vocab_size=tokenizer.vocab_size,
-            history_location=dataset_artifact.history_location,
+            normalization=normalization,
         )
 
     def list_datasets(self, source_name: str | None = None) -> list[ManagedDataset]:
@@ -136,12 +91,7 @@ class MicrobialDataHub:
     ) -> PreparationSessionArtifact:
         resolved_sequence_type = _normalize_sequence_type(sequence_type)
         effective_request = self._with_default_batch_size(request)
-        source = self._sources.get(source_name)
-        if source is None:
-            available_sources = ", ".join(sorted(self._sources))
-            raise SourceConfigurationError(
-                f"Unknown source '{source_name}'. Available sources: {available_sources}"
-            )
+        source = self._resolve_source(source_name)
 
         normalization_config = normalization or SequenceNormalizationConfig(sequence_type=resolved_sequence_type)
         return self._preparer.prepare(
@@ -152,6 +102,53 @@ class MicrobialDataHub:
             normalization=normalization_config,
             vocab_size=vocab_size or DEFAULT_VOCAB_SIZES["protein"],
             restart=restart,
+        )
+
+    def _resolve_source(self, source_name: str) -> SequenceSource:
+        source = self._sources.get(source_name)
+        if source is None:
+            available_sources = ", ".join(sorted(self._sources))
+            raise SourceConfigurationError(
+                f"Unknown source '{source_name}'. Available sources: {available_sources}"
+            )
+        return source
+
+    def _normalize_save_and_build_artifact(
+        self,
+        source_name: str,
+        request: FetchRequest,
+        records: list[SequenceRecord],
+        sequence_type: str,
+        merge_strategy: MergeStrategy,
+        normalization: SequenceNormalizationConfig | None,
+    ) -> TrainingDatasetArtifact:
+        normalization_config = normalization or SequenceNormalizationConfig(sequence_type=sequence_type)
+        normalized_records, report = normalize_records(records, normalization_config)
+        if not normalized_records:
+            raise DataNotFoundError(
+                f"All records were filtered out while preparing training data for '{request.dataset_name}'"
+            )
+
+        dataset_artifact = self._dataset_manager.save_records(
+            source_name=source_name,
+            request=request,
+            records=normalized_records,
+            merge_strategy=merge_strategy,
+        )
+        tokenizer = SequenceTokenizer.from_records(normalized_records)
+        return TrainingDatasetArtifact(
+            source_name=dataset_artifact.source_name,
+            dataset_name=dataset_artifact.dataset_name,
+            storage_mode=dataset_artifact.storage_mode,
+            snapshot_id=dataset_artifact.snapshot_id,
+            current_location=dataset_artifact.current_location,
+            train_txt_path=dataset_artifact.file_locations["train.txt"],
+            tokenizer_map_path=dataset_artifact.file_locations["tokenizer_map.json"],
+            record_count=dataset_artifact.record_count,
+            dropped_record_count=report.dropped_count,
+            sequence_type=tokenizer.sequence_type,
+            vocab_size=tokenizer.vocab_size,
+            history_location=dataset_artifact.history_location,
         )
 
     def _with_default_batch_size(self, request: FetchRequest) -> FetchRequest:

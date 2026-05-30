@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import logging
-import time
 
 from libs.data.contracts import HttpTransport, SequenceSource
 from libs.data.entities import FetchRequest, SequenceRecord
 from libs.data.utilities.exceptions import DataNotFoundError, SourceConfigurationError
 from libs.data.utilities.parsers import parse_ena_coding_embl, parse_fasta, parse_tsv_rows
+from libs.data.utilities.retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
 
-_ENA_EMPTY_RESPONSE_MAX_RETRIES = 3
-_ENA_EMPTY_RESPONSE_BACKOFF_BASE = 5.0
+_ENA_RETRY_POLICY = RetryPolicy(max_retries=3, backoff_base=5.0)
 
 
 class EnaSequenceSource(SequenceSource):
@@ -130,18 +129,16 @@ class EnaSequenceSource(SequenceSource):
             "query": query,
             "limit": self._request_limit_value(request),
         }
-        for retry in range(_ENA_EMPTY_RESPONSE_MAX_RETRIES + 1):
+
+        def _do_fetch():
             response_text = self._transport.get_text(self._BROWSER_FASTA_SEARCH_URL, params=params)
-            entries = parse_fasta(response_text)
-            if entries:
-                break
-            if retry < _ENA_EMPTY_RESPONSE_MAX_RETRIES:
-                delay = _ENA_EMPTY_RESPONSE_BACKOFF_BASE * (retry + 1)
-                logger.warning(
-                    "ENA browser returned no FASTA entries (attempt %d/%d), retrying in %.0fs",
-                    retry + 1, _ENA_EMPTY_RESPONSE_MAX_RETRIES + 1, delay,
-                )
-                time.sleep(delay)
+            return parse_fasta(response_text)
+
+        entries = _ENA_RETRY_POLICY.execute(
+            operation=_do_fetch,
+            is_empty=lambda e: not e,
+            context="ENA browser FASTA",
+        )
         effective_limit = request.effective_limit
         if effective_limit is None:
             return entries
@@ -156,19 +153,16 @@ class EnaSequenceSource(SequenceSource):
         batch_size = request.batch_size or self._DEFAULT_EMBL_BATCH_SIZE
         for accession_batch in self._chunked(accessions, batch_size):
             url = f"{self._BROWSER_EMBL_URL}/{','.join(accession_batch)}"
-            batch_entries = []
-            for retry in range(_ENA_EMPTY_RESPONSE_MAX_RETRIES + 1):
-                response_text = self._transport.get_text(url)
-                batch_entries = parse_ena_coding_embl(response_text)
-                if batch_entries:
-                    break
-                if retry < _ENA_EMPTY_RESPONSE_MAX_RETRIES:
-                    delay = _ENA_EMPTY_RESPONSE_BACKOFF_BASE * (retry + 1)
-                    logger.warning(
-                        "ENA browser returned no coding EMBL entries (attempt %d/%d), retrying in %.0fs",
-                        retry + 1, _ENA_EMPTY_RESPONSE_MAX_RETRIES + 1, delay,
-                    )
-                    time.sleep(delay)
+
+            def _do_fetch(fetch_url=url):
+                response_text = self._transport.get_text(fetch_url)
+                return parse_ena_coding_embl(response_text)
+
+            batch_entries = _ENA_RETRY_POLICY.execute(
+                operation=_do_fetch,
+                is_empty=lambda e: not e,
+                context="ENA coding EMBL batch",
+            )
             entries.extend(batch_entries)
             if request.effective_limit is not None and len(entries) >= request.effective_limit:
                 break
@@ -239,23 +233,15 @@ class EnaSequenceSource(SequenceSource):
         if offset > 0:
             params["offset"] = offset
 
-        for retry in range(_ENA_EMPTY_RESPONSE_MAX_RETRIES + 1):
+        def _do_fetch():
             response_text = self._transport.get_text(self._PORTAL_SEARCH_URL, params=params)
-            rows = parse_tsv_rows(response_text)
-            if rows:
-                return rows
-            if retry < _ENA_EMPTY_RESPONSE_MAX_RETRIES:
-                delay = _ENA_EMPTY_RESPONSE_BACKOFF_BASE * (retry + 1)
-                logger.warning(
-                    "ENA portal returned empty %s page at offset=%d (attempt %d/%d), retrying in %.0fs",
-                    empty_label,
-                    offset,
-                    retry + 1,
-                    _ENA_EMPTY_RESPONSE_MAX_RETRIES + 1,
-                    delay,
-                )
-                time.sleep(delay)
-        return []
+            return parse_tsv_rows(response_text)
+
+        return _ENA_RETRY_POLICY.execute(
+            operation=_do_fetch,
+            is_empty=lambda rows: not rows,
+            context=f"ENA portal {empty_label} at offset={offset}",
+        )
 
     def _uses_coding_records(self) -> bool:
         return self._result_type == self._CODING_RESULT_TYPE

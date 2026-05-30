@@ -272,4 +272,20 @@ class DataConfig:
         return self.models_root / SESSIONS_DIR_NAME
 
 
-DATA_CONFIG = DataConfig.load()
+_DATA_CONFIG: DataConfig | None = None
+
+
+def get_default_config() -> DataConfig:
+    """Lazy default config loader. Does not trigger at import time."""
+    global _DATA_CONFIG
+    if _DATA_CONFIG is None:
+        _DATA_CONFIG = DataConfig.load()
+    return _DATA_CONFIG
+
+
+# Backward-compatible alias; existing code that imports DATA_CONFIG still works.
+# Accessing as a module attribute triggers lazy loading via __getattr__.
+def __getattr__(name: str):
+    if name == "DATA_CONFIG":
+        return get_default_config()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

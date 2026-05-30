@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import logging
-import time
 
 from libs.data.contracts import HttpTransport, SequenceSource
 from libs.data.entities import FetchRequest, SequenceRecord
 from libs.data.utilities.exceptions import DataNotFoundError, SourceConfigurationError
 from libs.data.utilities.parsers import parse_ddbj_flatfile, parse_fasta
+from libs.data.utilities.retry import RetryPolicy
 
 logger = logging.getLogger(__name__)
 
-_DDBJ_EMPTY_RESPONSE_MAX_RETRIES = 3
-_DDBJ_EMPTY_RESPONSE_BACKOFF_BASE = 5.0
+_DDBJ_RETRY_POLICY = RetryPolicy(max_retries=3, backoff_base=5.0)
 
 
 class DdbjSequenceSource(SequenceSource):
@@ -91,36 +90,30 @@ class DdbjSequenceSource(SequenceSource):
     def _fetch_fasta_entries(self, accessions: tuple[str, ...], request: FetchRequest):
         params = self._base_params(accessions, request)
         params["format"] = "fasta"
-        for retry in range(_DDBJ_EMPTY_RESPONSE_MAX_RETRIES + 1):
+
+        def _do_fetch():
             response_text = self._transport.get_text(self._GETENTRY_URL, params=params)
-            entries = parse_fasta(response_text)
-            if entries:
-                return entries
-            if retry < _DDBJ_EMPTY_RESPONSE_MAX_RETRIES:
-                delay = _DDBJ_EMPTY_RESPONSE_BACKOFF_BASE * (retry + 1)
-                logger.warning(
-                    "DDBJ getentry returned no FASTA for %d accessions (attempt %d/%d), retrying in %.0fs",
-                    len(accessions), retry + 1, _DDBJ_EMPTY_RESPONSE_MAX_RETRIES + 1, delay,
-                )
-                time.sleep(delay)
-        return []
+            return parse_fasta(response_text)
+
+        return _DDBJ_RETRY_POLICY.execute(
+            operation=_do_fetch,
+            is_empty=lambda entries: not entries,
+            context=f"DDBJ FASTA for {len(accessions)} accessions",
+        )
 
     def _fetch_metadata(self, accessions: tuple[str, ...], request: FetchRequest):
         params = self._base_params(accessions, request)
         params["format"] = "flatfile"
-        for retry in range(_DDBJ_EMPTY_RESPONSE_MAX_RETRIES + 1):
+
+        def _do_fetch():
             response_text = self._transport.get_text(self._GETENTRY_URL, params=params)
-            parsed = parse_ddbj_flatfile(response_text)
-            if parsed:
-                return parsed
-            if retry < _DDBJ_EMPTY_RESPONSE_MAX_RETRIES:
-                delay = _DDBJ_EMPTY_RESPONSE_BACKOFF_BASE * (retry + 1)
-                logger.warning(
-                    "DDBJ getentry returned no flatfile metadata for %d accessions (attempt %d/%d), retrying in %.0fs",
-                    len(accessions), retry + 1, _DDBJ_EMPTY_RESPONSE_MAX_RETRIES + 1, delay,
-                )
-                time.sleep(delay)
-        return {}
+            return parse_ddbj_flatfile(response_text)
+
+        return _DDBJ_RETRY_POLICY.execute(
+            operation=_do_fetch,
+            is_empty=lambda parsed: not parsed,
+            context=f"DDBJ flatfile for {len(accessions)} accessions",
+        )
 
     def _base_params(self, accessions: tuple[str, ...], request: FetchRequest) -> dict[str, object]:
         params: dict[str, object] = {

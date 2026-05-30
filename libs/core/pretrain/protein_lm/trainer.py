@@ -22,13 +22,11 @@ from libs.core.pretrain.distributed import (
 )
 from libs.core.pretrain.training import (
     compute_mdc_causal_lm_loss,
-    evaluate_mdc_causal_lm_batch_loss,
 )
 from libs.core.pretrain.training_config import (
     apply_protein_training_optimizer_settings,
     build_protein_training_data_config,
     create_protein_training_optimizer,
-    describe_protein_training_optimizers,
     load_protein_training_config,
 )
 from libs.core.pretrain.protein_lm.core import (
@@ -41,7 +39,6 @@ from libs.core.pretrain.protein_lm.core import (
     generate_protein_text,
     load_protein_corpus_text_parts,
     load_protein_pretrain_checkpoint,
-    save_protein_pretrain_checkpoint,
     split_protein_corpus_text,
 )
 from libs.core.pretrain.protein_lm.support.backbone import (
@@ -58,6 +55,7 @@ from libs.core.pretrain.protein_lm.resume_state import (
     update_resume_state_progress,
 )
 from libs.core.pretrain.protein_lm.memory import run_preflight_vram_check
+from libs.core.pretrain.protein_lm.services import CheckpointService, Evaluator, MetricsWriter
 from libs.data.training.tokenizer import SequenceTokenizer
 
 
@@ -108,6 +106,18 @@ class ProteinPretrainTrainer:
         self._val_losses: list[float] = []
         self._best_val_loss = math.inf
         self._resume_state: dict[str, Any] | None = None
+
+        self._checkpoint_service = CheckpointService(
+            paths=self._paths,
+            resume_cfg=self._resume_cfg,
+            data_cfg=self._data_cfg,
+            model_cfg=self._model_cfg,
+            optimizer_cfg=self._optimizer_cfg,
+            runtime_cfg=self._runtime_cfg,
+            minio_cfg=self._minio_cfg,
+        )
+        self._metrics_writer = MetricsWriter(self._paths.get("metrics_history_path"))
+        self._evaluator = Evaluator()
 
     def _log(self, message: str) -> None:
         if self.runtime is None or self.runtime.is_main_process:
@@ -575,7 +585,8 @@ class ProteinPretrainTrainer:
                     if micro_step % gradient_accumulation_steps == 0:
                         if grad_clip_norm is not None:
                             if grad_scaler is not None:
-                                grad_scaler.unscale_(*optimizer_list)
+                                for opt in optimizer_list:
+                                    grad_scaler.unscale_(opt)
                             torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip_norm)
 
                         if grad_scaler is not None:
@@ -616,7 +627,8 @@ class ProteinPretrainTrainer:
             if micro_step % gradient_accumulation_steps != 0:
                 if grad_clip_norm is not None:
                     if grad_scaler is not None:
-                        grad_scaler.unscale_(*optimizer_list)
+                        for opt in optimizer_list:
+                            grad_scaler.unscale_(opt)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip_norm)
                 if grad_scaler is not None:
                     for opt in optimizer_list:
@@ -665,13 +677,8 @@ class ProteinPretrainTrainer:
 
     def _run_eval(self, train_eval_loader, val_loader, eval_batches: int, save_best: bool, autocast_dtype: torch.dtype | None = None) -> None:
         device = self.runtime.device
-        train_eval_loss = evaluate_mdc_causal_lm_batch_loss(
-            self.model, train_eval_loader, device=device, max_batches=eval_batches, autocast_dtype=autocast_dtype,
-        )
-        val_loss = (
-            evaluate_mdc_causal_lm_batch_loss(self.model, val_loader, device=device, max_batches=eval_batches, autocast_dtype=autocast_dtype)
-            if val_loader is not None
-            else float("nan")
+        train_eval_loss, val_loss = self._evaluator.evaluate(
+            self.model, train_eval_loader, val_loader, device=device, max_batches=eval_batches, autocast_dtype=autocast_dtype,
         )
         self._train_losses.append(train_eval_loss)
         self._val_losses.append(val_loss)
@@ -688,15 +695,8 @@ class ProteinPretrainTrainer:
 
     def _run_epoch_end_eval(self, train_eval_loader, val_loader, eval_batches: int, save_best: bool, autocast_dtype: torch.dtype | None = None) -> None:
         device = self.runtime.device
-        train_eval_loss = (
-            evaluate_mdc_causal_lm_batch_loss(self.model, train_eval_loader, device=device, max_batches=eval_batches, autocast_dtype=autocast_dtype)
-            if train_eval_loader is not None
-            else float("nan")
-        )
-        val_loss = (
-            evaluate_mdc_causal_lm_batch_loss(self.model, val_loader, device=device, max_batches=eval_batches, autocast_dtype=autocast_dtype)
-            if val_loader is not None
-            else float("nan")
+        train_eval_loss, val_loss = self._evaluator.evaluate(
+            self.model, train_eval_loader, val_loader, device=device, max_batches=eval_batches, autocast_dtype=autocast_dtype,
         )
         self._train_losses.append(train_eval_loss)
         self._val_losses.append(val_loss)
@@ -755,49 +755,28 @@ class ProteinPretrainTrainer:
         raise RuntimeError(msg)
 
     def _save_last_checkpoint(self) -> Path:
-        return self._save_checkpoint(self._resume_cfg["output_checkpoint_path"])
+        return self._do_save_checkpoint(self._resume_cfg["output_checkpoint_path"])
 
     def _save_best_checkpoint(self) -> Path:
-        return self._save_checkpoint(self._resume_cfg["best_checkpoint_path"])
+        return self._do_save_checkpoint(self._resume_cfg["best_checkpoint_path"])
 
     def _save_final_checkpoint(self) -> Path:
-        return self._save_checkpoint(self._resume_cfg["final_checkpoint_path"])
+        return self._do_save_checkpoint(self._resume_cfg["final_checkpoint_path"])
 
-    def _save_checkpoint(self, path: Path) -> Path:
-        tokenizer_map_path = self._paths["tokenizer_map_path"]
-        local_paths = self._discover_local_paths()
-        return save_protein_pretrain_checkpoint(
+    def _do_save_checkpoint(self, path: Path) -> Path:
+        return self._checkpoint_service.save_checkpoint(
             path,
             model=self.model,
             optimizer=self.optimizer,
             model_config=self.model_config,
             tokenizer=self.tokenizer,
-            tokenizer_map_path=tokenizer_map_path,
             epoch=self._epoch,
             global_step=self._global_step,
             tokens_seen=self._tokens_seen,
             train_losses=self._train_losses,
             val_losses=self._val_losses,
             best_val_loss=None if math.isinf(self._best_val_loss) else self._best_val_loss,
-            training_args={
-                "batch_size": self._data_cfg["batch_size"],
-                "context_length": int(self.model_config.context_length),
-                "stride": self._model_cfg["stride"],
-                "learning_rate": self._optimizer_cfg["learning_rate"],
-                "muon_learning_rate": self._optimizer_cfg.get("muon_learning_rate"),
-                "weight_decay": self._optimizer_cfg["weight_decay"],
-                "optimizer_type": self._optimizer_cfg["type"],
-                "optimizer_types": describe_protein_training_optimizers(self.optimizer),
-                "multi_gpu_mode": self._runtime_cfg["multi_gpu_mode"],
-                "num_workers": self._data_cfg["num_workers"],
-                "pin_memory": self._data_cfg["pin_memory"],
-                "train_config_path": str(self.config["config_path"]),
-            },
-            extra={
-                "corpus_files": [str(p.resolve()) for p in self._discover_local_paths()],
-                "minio_train_parts_prefix_uri": self._minio_cfg["train_parts_prefix_uri"],
-                "minio_train_part_uris": list(self._minio_cfg["train_part_uris"]),
-            },
+            local_paths=self._discover_local_paths(),
         )
 
     def _init_resume_state(self, mode: str) -> None:
@@ -893,20 +872,13 @@ class ProteinPretrainTrainer:
     def _append_metrics(self, train_loss: float, val_loss: float) -> None:
         if not self.is_main_process:
             return
-        metrics_path = self._paths.get("metrics_history_path")
-        if not metrics_path:
-            return
-        metrics_path = Path(metrics_path)
-        metrics_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "epoch": self._epoch,
-            "global_step": self._global_step,
-            "tokens_seen": self._tokens_seen,
-            "train_loss": train_loss,
-            "val_loss": val_loss,
-        }
-        with metrics_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        self._metrics_writer.append(
+            epoch=self._epoch,
+            global_step=self._global_step,
+            tokens_seen=self._tokens_seen,
+            train_loss=train_loss,
+            val_loss=val_loss,
+        )
 
         if self._resume_state is not None:
             update_resume_state_metrics(

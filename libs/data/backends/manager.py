@@ -13,15 +13,16 @@ class DatasetManager:
         source_name: str,
         request: FetchRequest,
         records: list[SequenceRecord],
-        merge_strategy: MergeStrategy = "upsert",
+        merge_strategy: MergeStrategy = "replace",
     ) -> DatasetArtifact:
-        del merge_strategy
+        if merge_strategy not in ("replace", "skip_duplicates", "upsert"):
+            raise NotImplementedError(f"Unsupported merge_strategy: {merge_strategy!r}")
         deduplicated_records = self._deduplicate(records)
         return self._repository.save_dataset(
             source_name=source_name,
             request=request,
             records=deduplicated_records,
-            merge_strategy="replace",
+            merge_strategy=merge_strategy,
         )
 
     def save_prebuilt_dataset(
