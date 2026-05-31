@@ -149,6 +149,21 @@ install_torch() {
   fi
   echo "venv python: $venv_python"
 
+  # Ensure pyvenv.cfg exists (uv 0.11+ may not create it for managed envs)
+  local pyvenv_cfg="$SCRIPT_DIR/.venv/pyvenv.cfg"
+  if [ ! -f "$pyvenv_cfg" ]; then
+    log "Creating pyvenv.cfg (missing after uv sync)"
+    local py_home
+    py_home=$("$venv_python" -c "import sys, os; print(os.path.dirname(getattr(sys, '_base_executable', sys.executable)))")
+    local py_ver
+    py_ver=$("$venv_python" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')")
+    cat > "$pyvenv_cfg" <<PYCFG
+home = $py_home
+include-system-site-packages = false
+version = $py_ver
+PYCFG
+  fi
+
   # Point uv pip at our project venv
   export VIRTUAL_ENV="$SCRIPT_DIR/.venv"
 

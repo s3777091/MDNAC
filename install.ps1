@@ -110,7 +110,20 @@ $VenvPython = Join-Path $ScriptRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path $VenvPython)) { Die '.venv\Scripts\python.exe not found after uv sync.' }
 Write-Host ('venv python: ' + $VenvPython)
 
-# Point uv pip at our project venv (not the uv-managed base interpreter)
+# Ensure pyvenv.cfg exists (uv 0.11+ may not create it for managed envs)
+$pyvenvCfg = Join-Path $ScriptRoot '.venv\pyvenv.cfg'
+if (-not (Test-Path $pyvenvCfg)) {
+    Log 'Creating pyvenv.cfg (missing after uv sync)'
+    $pyHome = & $VenvPython -c "import sys, os; print(os.path.dirname(getattr(sys, '_base_executable', sys.executable)))"
+    $pyVer = & $VenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
+    @"
+home = $pyHome
+include-system-site-packages = false
+version = $pyVer
+"@ | Set-Content -Path $pyvenvCfg -Encoding UTF8
+}
+
+# Point uv pip at our project venv
 $env:VIRTUAL_ENV = Join-Path $ScriptRoot '.venv'
 
 # --- Install PyTorch ---
