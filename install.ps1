@@ -89,11 +89,14 @@ if ($Recreate) {
             $_.Path -and $_.Path.StartsWith($venvPath)
         } | Stop-Process -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 1
-        # Use cmd rmdir which handles locked files better
+        # Temporarily allow errors for venv removal (locked files, etc.)
+        $ErrorActionPreference = "Continue"
         & cmd /c "rmdir /s /q .venv" 2>$null
         if (Test-Path '.venv') {
             Remove-Item -Recurse -Force '.venv' -ErrorAction SilentlyContinue
         }
+        $ErrorActionPreference = "Stop"
+        if (Test-Path '.venv') { Die '.venv could not be removed. Close all terminals/processes using it.' }
     }
 }
 
@@ -106,6 +109,9 @@ if ($LASTEXITCODE -ne 0) { Die 'uv sync failed' }
 $VenvPython = Join-Path $ScriptRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path $VenvPython)) { Die '.venv\Scripts\python.exe not found after uv sync.' }
 Write-Host ('venv python: ' + $VenvPython)
+
+# Point uv pip at our project venv (not the uv-managed base interpreter)
+$env:VIRTUAL_ENV = Join-Path $ScriptRoot '.venv'
 
 # --- Install PyTorch ---
 # Use 'uv pip' instead of 'python -m pip' because uv-managed Pythons
@@ -123,7 +129,7 @@ else {
     if ($Torch -eq 'cu128') { $indexUrl = 'https://download.pytorch.org/whl/cu128' }
 
     Log ('Installing PyTorch ' + $Torch + ' from ' + $indexUrl)
-    & $UV pip install --reinstall --index-url $indexUrl --python $VenvPython torch torchvision torchaudio
+    & $UV pip install --reinstall --index-url $indexUrl torch torchvision torchaudio
     if ($LASTEXITCODE -ne 0) { Die 'PyTorch install failed' }
 }
 
@@ -156,7 +162,7 @@ if (-not $SkipVerify) {
     & $VenvPython -c "import sys; print(f'Python {sys.version}')"
     if ($LASTEXITCODE -ne 0) { Die 'Python verification failed' }
 
-    & $UV pip show pip --python $VenvPython 2>$null | Select-String 'Version'
+    & $UV pip show pip 2>$null | Select-String 'Version'
 
     if (($Torch -eq 'cu126') -or ($Torch -eq 'cu128')) {
         Log 'Checking NVIDIA driver'
@@ -197,7 +203,7 @@ print(f'CUDA tensor OK on {x.device}')
 # --- Jupyter kernel ---
 if (-not $SkipKernel) {
     Log 'Installing Jupyter kernel'
-    & $UV pip install --python $VenvPython ipykernel 2>$null
+    & $UV pip install ipykernel 2>$null
     & $VenvPython -m ipykernel install --user --name microbial-dna-compiler --display-name 'Microbial DNA Compiler (uv GPU)'
 }
 

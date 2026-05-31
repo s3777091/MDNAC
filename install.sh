@@ -149,13 +149,8 @@ install_torch() {
   fi
   echo "venv python: $venv_python"
 
-  # Ensure pip
-  log "Ensuring pip"
-  "$venv_python" -m ensurepip --upgrade 2>/dev/null || true
-  "$venv_python" -m pip install --upgrade pip setuptools wheel 2>/dev/null || true
-
-  # Verify pip works
-  "$venv_python" -m pip --version || die "pip is broken"
+  # Point uv pip at our project venv
+  export VIRTUAL_ENV="$SCRIPT_DIR/.venv"
 
   if [ "$TORCH_VARIANT" = "none" ]; then
     log "Skipping PyTorch (--torch none)"
@@ -174,8 +169,10 @@ install_torch() {
     cu128) index_url="https://download.pytorch.org/whl/cu128" ;;
   esac
 
+  # Use 'uv pip' instead of 'python -m pip' because uv-managed Pythons
+  # set PEP 668 EXTERNALLY-MANAGED markers that block direct pip usage.
   log "Installing PyTorch $TORCH_VARIANT from $index_url"
-  "$venv_python" -m pip install --force-reinstall --index-url "$index_url" torch torchvision torchaudio
+  uv pip install --reinstall --index-url "$index_url" torch torchvision torchaudio
 }
 
 verify_install() {
@@ -187,7 +184,7 @@ verify_install() {
 
   log "Verifying Python"
   "$venv_python" -c "import sys; print(f'Python {sys.version}')"
-  "$venv_python" -c "import pip; print(f'pip {pip.__version__}')"
+  uv pip show pip 2>/dev/null | grep -i version || true
 
   if [ "$TORCH_VARIANT" = "cu126" ] || [ "$TORCH_VARIANT" = "cu128" ]; then
     log "Checking NVIDIA driver"
@@ -230,7 +227,7 @@ install_jupyter_kernel() {
 
   local venv_python="$SCRIPT_DIR/.venv/bin/python"
   log "Installing ipykernel and registering Jupyter kernel"
-  "$venv_python" -m pip install --upgrade ipykernel 2>/dev/null || true
+  uv pip install ipykernel 2>/dev/null || true
   "$venv_python" -m ipykernel install --user --name "microbial-dna-compiler" --display-name "Microbial DNA Compiler (uv)"
 }
 
