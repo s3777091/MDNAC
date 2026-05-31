@@ -168,6 +168,41 @@ if ($Torch -eq 'auto') {
     Log "Selected PyTorch variant: $Torch"
 }
 
+# --- Ensure Visual C++ Redistributable (required for torch DLLs on Windows) ---
+if ($Torch -ne 'none' -and $Torch -ne 'cpu') {
+    Log 'Checking Visual C++ Redistributable'
+    $vcInstalled = $false
+    $vcPaths = @(
+        'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+    )
+    foreach ($p in $vcPaths) {
+        if (Test-Path $p) {
+            $ver = (Get-ItemProperty $p -ErrorAction SilentlyContinue).Version
+            if ($ver) { $vcInstalled = $true; Write-Host "VC++ Redistributable: $ver"; break }
+        }
+    }
+    # Also check for vcruntime140.dll directly
+    if (-not $vcInstalled) {
+        $vcr = Join-Path $env:SystemRoot 'System32\vcruntime140.dll'
+        if (Test-Path $vcr) { $vcInstalled = $true; Write-Host 'VC++ Redistributable: vcruntime140.dll found' }
+    }
+    if (-not $vcInstalled) {
+        Warn 'Visual C++ Redistributable not detected. PyTorch DLLs WILL fail to load.'
+        Warn 'Downloading and installing VC++ Redistributable x64...'
+        $vcUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+        $vcExe = Join-Path $env:TEMP 'vc_redist.x64.exe'
+        try {
+            Invoke-WebRequest -Uri $vcUrl -OutFile $vcExe -UseBasicParsing
+            Start-Process -FilePath $vcExe -ArgumentList '/install', '/quiet', '/norestart' -Wait
+            Write-Host 'VC++ Redistributable installed.' -ForegroundColor Green
+        }
+        catch {
+            Die ('VC++ Redistributable install failed. Download manually: ' + $vcUrl)
+        }
+    }
+}
+
 # --- Install PyTorch ---
 # Use 'uv pip' because uv-managed Pythons have PEP 668 EXTERNALLY-MANAGED markers.
 if ($Torch -eq 'none') {
@@ -224,6 +259,14 @@ if (-not $SkipVerify) {
         Log 'Verifying PyTorch import and CUDA'
         $ErrorActionPreference = "Continue"
         & $VenvPython -c @"
+import os, sys
+
+# Add torch\lib to DLL search path (Windows DLL resolution fix)
+torch_lib = os.path.join(sys.prefix, 'Lib', 'site-packages', 'torch', 'lib')
+if os.path.isdir(torch_lib):
+    os.add_dll_directory(torch_lib)
+    os.environ['PATH'] = torch_lib + ';' + os.environ.get('PATH', '')
+
 import torch
 print(f'torch version:  {torch.__version__}')
 print(f'CUDA compiled:  {torch.version.cuda}')
@@ -240,13 +283,30 @@ if torch.cuda.is_available():
             Write-Host ''
             Write-Host 'PyTorch verification FAILED.' -ForegroundColor Red
             Write-Host ''
-            Write-Host 'Common causes:' -ForegroundColor Yellow
-            Write-Host '  1. Wrong CUDA variant for your GPU. Try a different --Torch value.' -ForegroundColor Yellow
-            Write-Host '     Your driver CUDA version determines the maximum supported variant.' -ForegroundColor Yellow
-            Write-Host '     CUDA 13.x driver -> use cu128' -ForegroundColor Yellow
-            Write-Host '     CUDA 12.6-12.7   -> use cu126' -ForegroundColor Yellow
-            Write-Host '  2. Missing Visual C++ Redistributable (vc_redist.x64.exe)' -ForegroundColor Yellow
-            Write-Host '  3. Antivirus blocking DLL loading' -ForegroundColor Yellow
+            # Run DLL diagnostic
+            Write-Host 'Running DLL diagnostic...' -ForegroundColor Yellow
+            $ErrorActionPreference = "Continue"
+            & $VenvPython -c @"
+import os, sys, ctypes
+torch_lib = os.path.join(sys.prefix, 'Lib', 'site-packages', 'torch', 'lib')
+print(f'torch lib dir: {torch_lib}')
+print(f'exists: {os.path.isdir(torch_lib)}')
+if os.path.isdir(torch_lib):
+    dlls = [f for f in os.listdir(torch_lib) if f.endswith('.dll')]
+    print(f'DLLs found: {len(dlls)}')
+    # Check vcruntime
+    for vc in ['vcruntime140.dll', 'vcruntime140_1.dll', 'msvcp140.dll']:
+        path = os.path.join(os.environ['SystemRoot'], 'System32', vc)
+        print(f'  {vc}: {"OK" if os.path.exists(path) else "MISSING"}')
+"@
+            $ErrorActionPreference = "Stop"
+            Write-Host ''
+            Write-Host 'Possible fixes:' -ForegroundColor Yellow
+            Write-Host '  1. Install Visual C++ Redistributable 2022 x64:' -ForegroundColor Yellow
+            Write-Host '     https://aka.ms/vs/17/release/vc_redist.x64.exe' -ForegroundColor Yellow
+            Write-Host '  2. Reboot after installing VC++ Redistributable' -ForegroundColor Yellow
+            Write-Host '  3. If VC++ is already installed, your GPU may need PyTorch nightly:' -ForegroundColor Yellow
+            Write-Host '     uv pip install --reinstall --index-url https://download.pytorch.org/whl/nightly/cu128 torch torchvision torchaudio' -ForegroundColor Yellow
             Write-Host ''
             Write-Host ('  Current variant: ' + $Torch) -ForegroundColor Yellow
             Die 'PyTorch verification failed. See suggestions above.'
