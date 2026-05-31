@@ -2,7 +2,7 @@
 param(
     [string]$Python = "3.11",
     [ValidateSet("cu126","cu128","cpu","auto","none")]
-    [string]$Torch = "cu126",
+    [string]$Torch = "auto",
     [switch]$Recreate,
     [switch]$SkipVerify,
     [switch]$SkipKernel
@@ -126,14 +126,52 @@ version = $pyVer
 # Point uv pip at our project venv
 $env:VIRTUAL_ENV = Join-Path $ScriptRoot '.venv'
 
+# --- Detect CUDA version for auto mode ---
+function Detect-CudaVariant {
+    $nvsmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
+    if (-not $nvsmi) {
+        Write-Host 'nvidia-smi not found, selecting cpu variant'
+        return 'cpu'
+    }
+    $output = & nvidia-smi 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host 'nvidia-smi failed, selecting cpu variant'
+        return 'cpu'
+    }
+    # Parse "CUDA Version: XX.Y" from nvidia-smi output
+    $match = [regex]::Match($output, 'CUDA Version:\s+(\d+)\.(\d+)')
+    if (-not $match.Success) {
+        Warn 'Could not parse CUDA version from nvidia-smi, selecting cpu variant'
+        return 'cpu'
+    }
+    $major = [int]$match.Groups[1].Value
+    $minor = [int]$match.Groups[2].Value
+    Write-Host "Detected CUDA driver version: $major.$minor"
+
+    # CUDA 12.8+ driver -> cu128, CUDA 12.6+ -> cu126, else cpu
+    if ($major -gt 12 -or ($major -eq 12 -and $minor -ge 8)) {
+        return 'cu128'
+    }
+    elseif ($major -eq 12 -and $minor -ge 6) {
+        return 'cu126'
+    }
+    else {
+        Warn "CUDA driver $major.$minor is older than 12.6. Selecting cpu variant."
+        return 'cpu'
+    }
+}
+
+# Resolve "auto" to a concrete variant
+if ($Torch -eq 'auto') {
+    Log 'Auto-detecting PyTorch variant from nvidia-smi'
+    $Torch = Detect-CudaVariant
+    Log "Selected PyTorch variant: $Torch"
+}
+
 # --- Install PyTorch ---
-# Use 'uv pip' instead of 'python -m pip' because uv-managed Pythons
-# set PEP 668 EXTERNALLY-MANAGED markers that block direct pip usage.
+# Use 'uv pip' because uv-managed Pythons have PEP 668 EXTERNALLY-MANAGED markers.
 if ($Torch -eq 'none') {
     Log 'Skipping PyTorch (--Torch none)'
-}
-elseif ($Torch -eq 'auto') {
-    Log 'Keeping PyTorch from uv.lock (--Torch auto)'
 }
 else {
     $indexUrl = ''
@@ -178,31 +216,40 @@ if (-not $SkipVerify) {
     if (($Torch -eq 'cu126') -or ($Torch -eq 'cu128')) {
         Log 'Checking NVIDIA driver'
         $nvsmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
-        if ($nvsmi) { & nvidia-smi }
-        else { Warn 'nvidia-smi not found. CUDA verification may fail.' }
+        if ($nvsmi) { & nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader }
+        else { Warn 'nvidia-smi not found. CUDA verification will fail.' }
     }
 
     if ($Torch -ne 'none') {
-        Log 'Verifying PyTorch'
+        Log 'Verifying PyTorch import and CUDA'
+        $ErrorActionPreference = "Continue"
         & $VenvPython -c @"
 import torch
-print(f'torch {torch.__version__}')
-print(f'CUDA compiled: {torch.version.cuda}')
+print(f'torch version:  {torch.__version__}')
+print(f'CUDA compiled:  {torch.version.cuda}')
 print(f'CUDA available: {torch.cuda.is_available()}')
 if torch.cuda.is_available():
-    print(f'GPU device: {torch.cuda.get_device_name(0)}')
+    print(f'GPU device:     {torch.cuda.get_device_name(0)}')
+    x = torch.randn(64, 64, device='cuda')
+    print(f'CUDA tensor:    OK ({x.device})')
 "@
-        if ($LASTEXITCODE -ne 0) { Die 'PyTorch import verification failed' }
+        $torchResult = $LASTEXITCODE
+        $ErrorActionPreference = "Stop"
 
-        if (($Torch -eq 'cu126') -or ($Torch -eq 'cu128')) {
-            Log 'Verifying CUDA tensor allocation'
-            & $VenvPython -c @"
-import torch
-assert torch.cuda.is_available(), 'CUDA not available but variant is $Torch'
-x = torch.randn(256, 256, device='cuda')
-print(f'CUDA tensor OK on {x.device}')
-"@
-            if ($LASTEXITCODE -ne 0) { Warn 'GPU tensor test failed. Check nvidia-smi and driver version.' }
+        if ($torchResult -ne 0) {
+            Write-Host ''
+            Write-Host 'PyTorch verification FAILED.' -ForegroundColor Red
+            Write-Host ''
+            Write-Host 'Common causes:' -ForegroundColor Yellow
+            Write-Host '  1. Wrong CUDA variant for your GPU. Try a different --Torch value.' -ForegroundColor Yellow
+            Write-Host '     Your driver CUDA version determines the maximum supported variant.' -ForegroundColor Yellow
+            Write-Host '     CUDA 13.x driver -> use cu128' -ForegroundColor Yellow
+            Write-Host '     CUDA 12.6-12.7   -> use cu126' -ForegroundColor Yellow
+            Write-Host '  2. Missing Visual C++ Redistributable (vc_redist.x64.exe)' -ForegroundColor Yellow
+            Write-Host '  3. Antivirus blocking DLL loading' -ForegroundColor Yellow
+            Write-Host ''
+            Write-Host ('  Current variant: ' + $Torch) -ForegroundColor Yellow
+            Die 'PyTorch verification failed. See suggestions above.'
         }
     }
 

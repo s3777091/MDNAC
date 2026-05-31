@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
-TORCH_VARIANT="${TORCH_VARIANT:-cu126}"
+TORCH_VARIANT="${TORCH_VARIANT:-auto}"
 RECREATE=0
 SKIP_VERIFY=0
 SKIP_KERNEL=0
@@ -141,6 +141,33 @@ sync_environment() {
   uv sync --frozen --python "$PYTHON_VERSION" "${EXTRA_SYNC_ARGS[@]+"${EXTRA_SYNC_ARGS[@]}"}"
 }
 
+detect_cuda_variant() {
+  if ! have nvidia-smi; then
+    echo "cpu"
+    return
+  fi
+  local output
+  output=$(nvidia-smi 2>&1) || { echo "cpu"; return; }
+  local cuda_ver
+  cuda_ver=$(echo "$output" | grep -oP 'CUDA Version:\s+\K[0-9]+\.[0-9]+' || true)
+  if [ -z "$cuda_ver" ]; then
+    echo "cpu"
+    return
+  fi
+  local major minor
+  major=$(echo "$cuda_ver" | cut -d. -f1)
+  minor=$(echo "$cuda_ver" | cut -d. -f2)
+  echo "Detected CUDA driver version: $cuda_ver" >&2
+  if [ "$major" -gt 12 ] || { [ "$major" -eq 12 ] && [ "$minor" -ge 8 ]; }; then
+    echo "cu128"
+  elif [ "$major" -eq 12 ] && [ "$minor" -ge 6 ]; then
+    echo "cu126"
+  else
+    warn "CUDA driver $cuda_ver is older than 12.6. Selecting cpu variant."
+    echo "cpu"
+  fi
+}
+
 install_torch() {
   # Resolve venv python explicitly
   local venv_python="$SCRIPT_DIR/.venv/bin/python"
@@ -167,13 +194,15 @@ PYCFG
   # Point uv pip at our project venv
   export VIRTUAL_ENV="$SCRIPT_DIR/.venv"
 
-  if [ "$TORCH_VARIANT" = "none" ]; then
-    log "Skipping PyTorch (--torch none)"
-    return
+  # Resolve "auto" to concrete variant
+  if [ "$TORCH_VARIANT" = "auto" ]; then
+    log "Auto-detecting PyTorch variant from nvidia-smi"
+    TORCH_VARIANT=$(detect_cuda_variant)
+    log "Selected PyTorch variant: $TORCH_VARIANT"
   fi
 
-  if [ "$TORCH_VARIANT" = "auto" ]; then
-    log "Keeping PyTorch from uv.lock (--torch auto)"
+  if [ "$TORCH_VARIANT" = "none" ]; then
+    log "Skipping PyTorch (--torch none)"
     return
   fi
 
@@ -184,8 +213,6 @@ PYCFG
     cu128) index_url="https://download.pytorch.org/whl/cu128" ;;
   esac
 
-  # Use 'uv pip' instead of 'python -m pip' because uv-managed Pythons
-  # set PEP 668 EXTERNALLY-MANAGED markers that block direct pip usage.
   log "Installing PyTorch $TORCH_VARIANT from $index_url"
   uv pip install --reinstall --index-url "$index_url" torch torchvision torchaudio
 }

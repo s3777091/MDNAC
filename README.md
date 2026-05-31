@@ -15,17 +15,17 @@ Current training flow:
 ### Windows (PowerShell)
 
 ```powershell
-# GPU with CUDA 12.6 (recommended for NVIDIA GPUs):
-.\install.ps1 -Recreate -Torch cu126
+# Auto-detect GPU and install best variant (recommended):
+.\install.ps1 -Recreate
 
-# GPU with CUDA 12.8:
+# Explicit CUDA 12.8 (RTX 40xx/50xx, CUDA driver 12.8+):
 .\install.ps1 -Recreate -Torch cu128
+
+# Explicit CUDA 12.6 (older GPUs, CUDA driver 12.6-12.7):
+.\install.ps1 -Recreate -Torch cu126
 
 # CPU only (no GPU):
 .\install.ps1 -Recreate -Torch cpu
-
-# Keep whatever torch uv.lock resolved (auto):
-.\install.ps1 -Recreate -Torch auto
 
 # Skip torch entirely:
 .\install.ps1 -Recreate -Torch none
@@ -36,20 +36,20 @@ Optional flags: `-SkipVerify`, `-SkipKernel`, `-Python 3.12`.
 ### Linux (bash)
 
 ```bash
-# GPU with CUDA 12.6:
-bash install.sh --torch cu126
+# Auto-detect GPU (recommended):
+bash install.sh --recreate
 
-# GPU with CUDA 12.8:
-bash install.sh --torch cu128
+# Explicit CUDA 12.8:
+bash install.sh --recreate --torch cu128
 
-# CPU only:
-bash install.sh --torch cpu
-
-# Fresh install (removes .venv first):
+# Explicit CUDA 12.6:
 bash install.sh --recreate --torch cu126
 
+# CPU only:
+bash install.sh --recreate --torch cpu
+
 # Skip verification and kernel install:
-bash install.sh --torch cu126 --skip-verify --skip-kernel
+bash install.sh --recreate --skip-verify --skip-kernel
 ```
 
 ### Verify GPU
@@ -62,10 +62,20 @@ On a working GPU machine this prints `True` for `cuda.is_available()` and shows 
 
 **Important**: `nvidia-smi` must work before CUDA torch can pass GPU verification. If it fails, install or update your NVIDIA driver first.
 
+### Which CUDA variant to use
+
+| nvidia-smi CUDA Version | Recommended variant |
+|--------------------------|---------------------|
+| 13.x or 12.8+          | `cu128`            |
+| 12.6 – 12.7            | `cu126`            |
+| < 12.6 or no GPU       | `cpu`              |
+
+The default (`auto`) runs `nvidia-smi`, parses the CUDA version, and picks automatically.
+
 ### How torch installation works
 
 1. `uv sync --frozen` installs torch from `uv.lock` (PyPI default, usually CPU on Windows).
-2. The installer then uses `pip install --force-reinstall --index-url <wheel-index>` to replace torch with the correct CUDA/CPU variant.
+2. The installer uses `uv pip install --reinstall --index-url <wheel-index>` to replace torch with the correct CUDA/CPU variant.
 3. `pyproject.toml` declares `torch>=2.11` in base dependencies so `uv sync` always resolves a torch version compatible with the lock file.
 
 ## Local RefSeq Build
