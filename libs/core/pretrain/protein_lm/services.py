@@ -51,6 +51,7 @@ class CheckpointService:
         train_losses: list[float],
         val_losses: list[float],
         best_val_loss: float | None,
+        best_metric_name: str | None,
         local_paths: tuple[Path, ...],
     ) -> Path:
         from libs.core.pretrain.protein_lm.core import save_protein_pretrain_checkpoint
@@ -69,6 +70,7 @@ class CheckpointService:
             train_losses=train_losses,
             val_losses=val_losses,
             best_val_loss=best_val_loss,
+            best_metric_name=best_metric_name,
             training_args={
                 "batch_size": self._data_cfg["batch_size"],
                 "context_length": int(model_config.context_length),
@@ -114,11 +116,21 @@ class MetricsWriter:
             "epoch": epoch,
             "global_step": global_step,
             "tokens_seen": tokens_seen,
-            "train_loss": train_loss,
-            "val_loss": val_loss,
+            "train_loss": _json_loss(train_loss),
+            "val_loss": _json_loss(val_loss),
         }
         with self._metrics_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            handle.write(json.dumps(payload, ensure_ascii=False, allow_nan=False) + "\n")
+
+
+def _json_loss(value: float) -> float | None:
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError):
+        return None
+    if resolved != resolved or resolved in {float("inf"), float("-inf")}:
+        return None
+    return resolved
 
 
 class Evaluator:

@@ -17,8 +17,8 @@ data:
   cleanup_completed_parts: false
   validate_cached_parts: true
   train_ratio: 0.9
-  batch_size: 1
-  num_workers: 0
+  batch_size: 2
+  num_workers: 2
   pin_memory: true
   shuffle_parts: true
   shuffle_examples: true
@@ -44,8 +44,8 @@ training:
   num_epochs: 3
   max_steps: null
   gradient_accumulation_steps: 8
-  save_every_steps: 500
-  eval_freq: 500
+  save_every_steps: 10
+  eval_freq: 10
   eval_batches: 2
   grad_clip_norm: 1.0
   save_last: true
@@ -54,7 +54,7 @@ training:
 optimizer:
   type: muon
   learning_rate: 0.0003
-  muon_learning_rate: 0.002
+  muon_learning_rate: 0.0003
   weight_decay: 0.1
   fused: auto
 runtime:

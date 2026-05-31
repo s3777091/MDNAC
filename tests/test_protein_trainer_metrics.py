@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+import json
+import math
+import shutil
+import unittest
+from pathlib import Path
+
+from libs.core.pretrain.protein_lm.services import MetricsWriter
+from libs.core.pretrain.protein_lm.trainer import (
+    ProteinPretrainTrainer,
+    _format_eval_loss,
+    _restore_best_val_loss,
+)
+
+
+class ProteinTrainerMetricTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path("tests/artifacts/protein-trainer-metrics")
+        shutil.rmtree(self.root, ignore_errors=True)
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_validation_unavailable_is_logged_as_not_available(self) -> None:
+        self.assertEqual("n/a", _format_eval_loss(float("nan"), available=False))
+
+    def test_validation_unavailable_never_saves_best_checkpoint(self) -> None:
+        trainer = ProteinPretrainTrainer.__new__(ProteinPretrainTrainer)
+        trainer._best_val_loss = math.inf
+        trainer._best_metric_name = "val_loss"
+        trainer._save_best_checkpoint = lambda: self.fail("best checkpoint should not be saved")
+
+        improved = trainer._maybe_save_best(4.2, has_validation_loader=False, save_best=True)
+
+        self.assertFalse(improved)
+        self.assertTrue(math.isinf(trainer._best_val_loss))
+        self.assertEqual("val_loss", trainer._best_metric_name)
+
+    def test_restore_keeps_validation_best_loss(self) -> None:
+        best_loss = _restore_best_val_loss(
+            {"best_metric_name": "val_loss", "val_losses": [4.2]},
+            best_loss=4.2,
+        )
+
+        self.assertEqual(4.2, best_loss)
+
+    def test_restore_ignores_legacy_train_loss_best_checkpoint(self) -> None:
+        best_loss = _restore_best_val_loss(
+            {"best_metric_name": "train_loss", "val_losses": [float("nan")]},
+            best_loss=4.2,
+        )
+
+        self.assertTrue(math.isinf(best_loss))
+
+    def test_metrics_writer_serializes_nonfinite_losses_as_null(self) -> None:
+        metrics_path = self.root / "metrics_history.jsonl"
+        MetricsWriter(metrics_path).append(
+            epoch=1,
+            global_step=200,
+            tokens_seen=10,
+            train_loss=4.2,
+            val_loss=float("nan"),
+        )
+
+        payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+        self.assertEqual(4.2, payload["train_loss"])
+        self.assertIsNone(payload["val_loss"])
+
+
+if __name__ == "__main__":
+    unittest.main()

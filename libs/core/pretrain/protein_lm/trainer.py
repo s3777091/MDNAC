@@ -73,6 +73,35 @@ class ProteinPretrainResult:
     final_val_loss: float | None
 
 
+def _is_finite_loss(value: float | None) -> bool:
+    try:
+        return value is not None and math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _format_eval_loss(value: float, *, available: bool = True) -> str:
+    if not available:
+        return "n/a"
+    if math.isnan(value):
+        return "nan"
+    if math.isinf(value):
+        return "inf" if value > 0 else "-inf"
+    return f"{value:.4f}"
+
+
+def _restore_best_val_loss(checkpoint_meta: Mapping[str, Any], best_loss: float | None) -> float:
+    if best_loss is None or not _is_finite_loss(best_loss):
+        return math.inf
+    metric_name = checkpoint_meta.get("best_metric_name")
+    if metric_name is not None and metric_name != "val_loss":
+        return math.inf
+    val_losses = checkpoint_meta.get("val_losses", [])
+    if val_losses and not any(_is_finite_loss(loss) for loss in val_losses):
+        return math.inf
+    return float(best_loss)
+
+
 class ProteinPretrainTrainer:
     def __init__(
         self,
@@ -105,6 +134,7 @@ class ProteinPretrainTrainer:
         self._train_losses: list[float] = []
         self._val_losses: list[float] = []
         self._best_val_loss = math.inf
+        self._best_metric_name = "val_loss"
         self._resume_state: dict[str, Any] | None = None
 
         self._checkpoint_service = CheckpointService(
@@ -226,7 +256,8 @@ class ProteinPretrainTrainer:
         self._train_losses = list(checkpoint_meta.get("train_losses", []))
         self._val_losses = list(checkpoint_meta.get("val_losses", []))
         best_val = checkpoint_meta.get("best_val_loss")
-        self._best_val_loss = math.inf if best_val is None else float(best_val)
+        self._best_val_loss = _restore_best_val_loss(checkpoint_meta, best_val)
+        self._best_metric_name = "val_loss"
         self._log(f"✅ Resumed from epoch={self._epoch} step={self._global_step} tokens={self._tokens_seen:,}")
 
         self._save_config_snapshot()
@@ -687,14 +718,18 @@ class ProteinPretrainTrainer:
         self._val_losses.append(val_loss)
         self._append_metrics(train_eval_loss, val_loss)
 
-        metric = val_loss if val_loader is not None else train_eval_loss
-        if save_best and not math.isnan(metric) and metric < self._best_val_loss:
-            self._best_val_loss = metric
-            self._save_best_checkpoint()
+        improved = self._maybe_save_best(val_loss, has_validation_loader=val_loader is not None, save_best=save_best)
 
         if self.is_main_process:
-            best_marker = " 🏆 new best!" if save_best and not math.isnan(metric) and metric <= self._best_val_loss else ""
-            print(f"  📊 eval step={self._global_step} | train={train_eval_loss:.4f} | val={val_loss:.4f}{best_marker}", flush=True)
+            best_marker = " 🏆 new best val_loss!" if improved else ""
+            print(
+                "  📊 eval "
+                f"step={self._global_step} | "
+                f"train={_format_eval_loss(train_eval_loss)} | "
+                f"val={_format_eval_loss(val_loss, available=val_loader is not None)}"
+                f"{best_marker}",
+                flush=True,
+            )
 
     def _run_epoch_end_eval(self, train_eval_loader, val_loader, eval_batches: int, save_best: bool, autocast_dtype: torch.dtype | None = None) -> None:
         device = self.runtime.device
@@ -705,12 +740,27 @@ class ProteinPretrainTrainer:
         self._val_losses.append(val_loss)
         self._append_metrics(train_eval_loss, val_loss)
 
-        metric = val_loss if val_loader is not None else train_eval_loss
-        if save_best and not math.isnan(metric) and metric < self._best_val_loss:
-            self._best_val_loss = metric
-            self._save_best_checkpoint()
+        self._maybe_save_best(val_loss, has_validation_loader=val_loader is not None, save_best=save_best)
 
-        self._log(f"  ✅ Epoch {self._epoch} done | train={train_eval_loss:.4f} | val={val_loss:.4f}")
+        self._log(
+            f"  ✅ Epoch {self._epoch} done | "
+            f"train={_format_eval_loss(train_eval_loss)} | "
+            f"val={_format_eval_loss(val_loss, available=val_loader is not None)}"
+        )
+
+    def _maybe_save_best(
+        self,
+        val_loss: float,
+        *,
+        has_validation_loader: bool,
+        save_best: bool,
+    ) -> bool:
+        improved = save_best and has_validation_loader and _is_finite_loss(val_loss) and val_loss < self._best_val_loss
+        if improved:
+            self._best_val_loss = val_loss
+            self._best_metric_name = "val_loss"
+            self._save_best_checkpoint()
+        return improved
 
     def _handle_oom(self, batch_size: int, context_length: int) -> None:
         """Handle CUDA OOM during training: cleanup, save state, raise with guidance."""
@@ -779,6 +829,7 @@ class ProteinPretrainTrainer:
             train_losses=self._train_losses,
             val_losses=self._val_losses,
             best_val_loss=None if math.isinf(self._best_val_loss) else self._best_val_loss,
+            best_metric_name=self._best_metric_name,
             local_paths=self._discover_local_paths(),
         )
 
@@ -846,6 +897,7 @@ class ProteinPretrainTrainer:
         update_resume_state_metrics(
             self._resume_state,
             best_loss=best_loss,
+            best_metric_name=self._best_metric_name if best_loss is not None else None,
         )
         save_resume_state(self._resume_state, resume_state_path)
 
@@ -887,7 +939,7 @@ class ProteinPretrainTrainer:
             update_resume_state_metrics(
                 self._resume_state,
                 train_loss=train_loss,
-                val_loss=val_loss if not math.isnan(val_loss) else None,
+                val_loss=val_loss if _is_finite_loss(val_loss) else None,
             )
 
     def _move_batch(self, batch: CausalLMBatch, device) -> CausalLMBatch:

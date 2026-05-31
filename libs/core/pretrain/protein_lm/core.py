@@ -515,6 +515,7 @@ def save_protein_pretrain_checkpoint(
     val_losses: Sequence[float],
     training_args: Mapping[str, object] | None = None,
     best_val_loss: float | None = None,
+    best_metric_name: str | None = None,
     extra: Mapping[str, object] | None = None,
 ) -> Path:
     resolved_path = Path(path)
@@ -540,6 +541,7 @@ def save_protein_pretrain_checkpoint(
         "val_losses": list(val_losses),
         "training_args": dict(training_args or {}),
         "best_val_loss": best_val_loss,
+        "best_metric_name": best_metric_name,
     }
     if extra:
         checkpoint.update(dict(extra))
