@@ -8,7 +8,7 @@ param(
     [switch]$SkipKernel
 )
 
-$ErrorActionPreference = "Continue"
+$ErrorActionPreference = "Stop"
 if ($env:PYTHON_VERSION) { $Python = $env:PYTHON_VERSION }
 if ($env:TORCH_VARIANT) { $Torch = $env:TORCH_VARIANT }
 
@@ -102,17 +102,29 @@ Log 'Syncing environment from uv.lock'
 & $UV sync --frozen --python $Python
 if ($LASTEXITCODE -ne 0) { Die 'uv sync failed' }
 
+# --- Resolve venv Python path explicitly ---
+$VenvPython = Join-Path $ScriptRoot '.venv\Scripts\python.exe'
+if (-not (Test-Path $VenvPython)) { Die '.venv\Scripts\python.exe not found after uv sync.' }
+Write-Host ('venv python: ' + $VenvPython)
+
 # --- Ensure pip ---
 Log 'Ensuring pip'
-& $UV run --no-sync python -m ensurepip --upgrade 2>$null
-& $UV run --no-sync python -m pip install --upgrade pip setuptools wheel 2>$null
+$ErrorActionPreference = "Continue"
+& $VenvPython -m ensurepip --upgrade 2>$null
+& $VenvPython -m pip install --upgrade pip setuptools wheel 2>$null
+$ErrorActionPreference = "Stop"
+
+# --- Verify pip works ---
+$pipVer = & $VenvPython -m pip --version 2>&1
+if ($LASTEXITCODE -ne 0) { Die ('pip is broken: ' + $pipVer) }
+Write-Host ('pip: ' + $pipVer)
 
 # --- Install PyTorch ---
 if ($Torch -eq 'none') {
-    Log 'Skipping PyTorch'
+    Log 'Skipping PyTorch (--Torch none)'
 }
 elseif ($Torch -eq 'auto') {
-    Log 'Keeping PyTorch from uv.lock'
+    Log 'Keeping PyTorch from uv.lock (--Torch auto)'
 }
 else {
     $indexUrl = ''
@@ -121,7 +133,7 @@ else {
     if ($Torch -eq 'cu128') { $indexUrl = 'https://download.pytorch.org/whl/cu128' }
 
     Log ('Installing PyTorch ' + $Torch + ' from ' + $indexUrl)
-    & $UV run --no-sync python -m pip install --reinstall --upgrade --index-url $indexUrl torch torchvision torchaudio
+    & $VenvPython -m pip install --force-reinstall --index-url $indexUrl torch torchvision torchaudio
     if ($LASTEXITCODE -ne 0) { Die 'PyTorch install failed' }
 }
 
@@ -151,34 +163,52 @@ if ((-not $hasEnv) -and $hasExample) {
 # --- Verify ---
 if (-not $SkipVerify) {
     Log 'Verifying Python'
-    & $UV run --no-sync python -c 'import sys; print(sys.version)'
+    & $VenvPython -c "import sys; print(f'Python {sys.version}')"
+    if ($LASTEXITCODE -ne 0) { Die 'Python verification failed' }
+
+    & $VenvPython -c "import pip; print(f'pip {pip.__version__}')"
 
     if (($Torch -eq 'cu126') -or ($Torch -eq 'cu128')) {
         Log 'Checking NVIDIA driver'
         $nvsmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
         if ($nvsmi) { & nvidia-smi }
-        else { Warn 'nvidia-smi not found' }
+        else { Warn 'nvidia-smi not found. CUDA verification may fail.' }
     }
 
     if ($Torch -ne 'none') {
         Log 'Verifying PyTorch'
-        & $UV run --no-sync python -c 'import torch; print(torch.__version__); print(torch.cuda.is_available())'
+        & $VenvPython -c @"
+import torch
+print(f'torch {torch.__version__}')
+print(f'CUDA compiled: {torch.version.cuda}')
+print(f'CUDA available: {torch.cuda.is_available()}')
+if torch.cuda.is_available():
+    print(f'GPU device: {torch.cuda.get_device_name(0)}')
+"@
+        if ($LASTEXITCODE -ne 0) { Die 'PyTorch import verification failed' }
 
         if (($Torch -eq 'cu126') -or ($Torch -eq 'cu128')) {
-            & $UV run --no-sync python -c 'import torch; assert torch.cuda.is_available(); x=torch.randn(256,256,device=chr(99)+chr(117)+chr(100)+chr(97)); print(x.device)'
-            if ($LASTEXITCODE -ne 0) { Warn 'GPU test failed' }
+            Log 'Verifying CUDA tensor allocation'
+            & $VenvPython -c @"
+import torch
+assert torch.cuda.is_available(), 'CUDA not available but variant is $Torch'
+x = torch.randn(256, 256, device='cuda')
+print(f'CUDA tensor OK on {x.device}')
+"@
+            if ($LASTEXITCODE -ne 0) { Warn 'GPU tensor test failed. Check nvidia-smi and driver version.' }
         }
     }
 
     Log 'Verifying project import'
-    & $UV run --no-sync python -c 'from libs.data.config import DataConfig; print(DataConfig)'
+    & $VenvPython -c "from libs.data.config import DataConfig; print('OK: libs.data.config importable')"
+    if ($LASTEXITCODE -ne 0) { Die 'Project import verification failed' }
 }
 
 # --- Jupyter kernel ---
 if (-not $SkipKernel) {
     Log 'Installing Jupyter kernel'
-    & $UV run --no-sync python -m pip install --upgrade ipykernel 2>$null
-    & $UV run --no-sync python -m ipykernel install --user --name microbial-dna-compiler --display-name 'Microbial DNA Compiler (uv GPU)'
+    & $VenvPython -m pip install --upgrade ipykernel 2>$null
+    & $VenvPython -m ipykernel install --user --name microbial-dna-compiler --display-name 'Microbial DNA Compiler (uv GPU)'
 }
 
 # --- Done ---

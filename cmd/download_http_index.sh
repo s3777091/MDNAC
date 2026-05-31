@@ -8,4 +8,4 @@ export UV_CACHE_DIR="${UV_CACHE_DIR:-$REPO_ROOT/.uv-cache}"
 export PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}"
 
 cd "$REPO_ROOT"
-uv run --no-sync python "$SCRIPT_DIR/concat_text_files.py" "$@"
+uv run --no-sync python "$SCRIPT_DIR/download_http_index.py" "$@"

@@ -2,6 +2,10 @@
 set -Eeuo pipefail
 
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
+TORCH_VARIANT="${TORCH_VARIANT:-cu126}"
+RECREATE=0
+SKIP_VERIFY=0
+SKIP_KERNEL=0
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -9,16 +13,53 @@ cd "$SCRIPT_DIR"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$SCRIPT_DIR/.uv-cache}"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
+# --- Parse arguments ---
+EXTRA_SYNC_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --torch)
+      TORCH_VARIANT="$2"
+      shift 2
+      ;;
+    --python)
+      PYTHON_VERSION="$2"
+      shift 2
+      ;;
+    --recreate)
+      RECREATE=1
+      shift
+      ;;
+    --skip-verify)
+      SKIP_VERIFY=1
+      shift
+      ;;
+    --skip-kernel)
+      SKIP_KERNEL=1
+      shift
+      ;;
+    *)
+      EXTRA_SYNC_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+# Validate torch variant
+case "$TORCH_VARIANT" in
+  cu126|cu128|cpu|auto|none) ;;
+  *) die "Invalid --torch value: $TORCH_VARIANT. Must be one of: cu126, cu128, cpu, auto, none" ;;
+esac
+
 log() {
   printf '\n==> %s\n' "$*"
 }
 
 warn() {
-  printf 'warning: %s\n' "$*" >&2
+  printf 'WARNING: %s\n' "$*" >&2
 }
 
 die() {
-  printf 'error: %s\n' "$*" >&2
+  printf 'ERROR: %s\n' "$*" >&2
   exit 1
 }
 
@@ -97,18 +138,100 @@ prepare_local_files() {
 
 sync_environment() {
   log "Syncing Python environment from uv.lock"
-  uv sync --frozen --python "$PYTHON_VERSION" "$@"
+  uv sync --frozen --python "$PYTHON_VERSION" "${EXTRA_SYNC_ARGS[@]+"${EXTRA_SYNC_ARGS[@]}"}"
+}
+
+install_torch() {
+  # Resolve venv python explicitly
+  local venv_python="$SCRIPT_DIR/.venv/bin/python"
+  if [ ! -x "$venv_python" ]; then
+    die ".venv/bin/python not found after uv sync."
+  fi
+  echo "venv python: $venv_python"
+
+  # Ensure pip
+  log "Ensuring pip"
+  "$venv_python" -m ensurepip --upgrade 2>/dev/null || true
+  "$venv_python" -m pip install --upgrade pip setuptools wheel 2>/dev/null || true
+
+  # Verify pip works
+  "$venv_python" -m pip --version || die "pip is broken"
+
+  if [ "$TORCH_VARIANT" = "none" ]; then
+    log "Skipping PyTorch (--torch none)"
+    return
+  fi
+
+  if [ "$TORCH_VARIANT" = "auto" ]; then
+    log "Keeping PyTorch from uv.lock (--torch auto)"
+    return
+  fi
+
+  local index_url=""
+  case "$TORCH_VARIANT" in
+    cpu)   index_url="https://download.pytorch.org/whl/cpu" ;;
+    cu126) index_url="https://download.pytorch.org/whl/cu126" ;;
+    cu128) index_url="https://download.pytorch.org/whl/cu128" ;;
+  esac
+
+  log "Installing PyTorch $TORCH_VARIANT from $index_url"
+  "$venv_python" -m pip install --force-reinstall --index-url "$index_url" torch torchvision torchaudio
 }
 
 verify_install() {
-  log "Verifying installed package"
-  uv run --no-sync python -c "from libs.data.config import DataConfig; print('ok: microbial-dna-compiler environment is importable')"
+  local venv_python="$SCRIPT_DIR/.venv/bin/python"
+
+  if [ "$SKIP_VERIFY" -eq 1 ]; then
+    return
+  fi
+
+  log "Verifying Python"
+  "$venv_python" -c "import sys; print(f'Python {sys.version}')"
+  "$venv_python" -c "import pip; print(f'pip {pip.__version__}')"
+
+  if [ "$TORCH_VARIANT" = "cu126" ] || [ "$TORCH_VARIANT" = "cu128" ]; then
+    log "Checking NVIDIA driver"
+    if have nvidia-smi; then
+      nvidia-smi
+    else
+      warn "nvidia-smi not found. CUDA verification may fail."
+    fi
+  fi
+
+  if [ "$TORCH_VARIANT" != "none" ]; then
+    log "Verifying PyTorch"
+    "$venv_python" -c "
+import torch
+print(f'torch {torch.__version__}')
+print(f'CUDA compiled: {torch.version.cuda}')
+print(f'CUDA available: {torch.cuda.is_available()}')
+if torch.cuda.is_available():
+    print(f'GPU device: {torch.cuda.get_device_name(0)}')
+"
+    if [ "$TORCH_VARIANT" = "cu126" ] || [ "$TORCH_VARIANT" = "cu128" ]; then
+      log "Verifying CUDA tensor allocation"
+      "$venv_python" -c "
+import torch
+assert torch.cuda.is_available(), 'CUDA not available but variant is $TORCH_VARIANT'
+x = torch.randn(256, 256, device='cuda')
+print(f'CUDA tensor OK on {x.device}')
+" || warn "GPU tensor test failed. Check nvidia-smi and driver version."
+    fi
+  fi
+
+  log "Verifying project import"
+  "$venv_python" -c "from libs.data.config import DataConfig; print('OK: libs.data.config importable')"
 }
 
 install_jupyter_kernel() {
+  if [ "$SKIP_KERNEL" -eq 1 ]; then
+    return
+  fi
+
+  local venv_python="$SCRIPT_DIR/.venv/bin/python"
   log "Installing ipykernel and registering Jupyter kernel"
-  uv pip install ipykernel
-  uv run python -m ipykernel install --user --name "microbial-dna-compiler" --display-name "Microbial DNA Compiler (uv)"
+  "$venv_python" -m pip install --upgrade ipykernel 2>/dev/null || true
+  "$venv_python" -m ipykernel install --user --name "microbial-dna-compiler" --display-name "Microbial DNA Compiler (uv)"
 }
 
 persist_path() {
@@ -118,35 +241,40 @@ persist_path() {
   fi
 }
 
-print_next_steps() {
-  cat <<'EOF'
+print_done() {
+  cat <<EOF
 
 
+==================================================================
+  DONE. Torch=$TORCH_VARIANT  Python=$PYTHON_VERSION
+==================================================================
 
-Environment is ready.
+GPU test:
+  uv run python -c "import torch; print(torch.cuda.is_available())"
 
-Common commands:
-  uv run python -m unittest discover -s tests -p "test_*.py"
-  bash cmd/build_refseq_profile_text.sh data/raw/refseq_bacteria_protein -o data/compiled/refseq_bacteria_protein --vocab-size 512 --instruction-min-proteins 10 --workers 0
-  bash cmd/build_profile_pretrain_from_instruction_jsonl.sh data/compiled/refseq_bacteria_protein/instruction.jsonl -o data/compiled/refseq_bacteria_profile_pretrain
+Run tests:
+  uv run python -m pytest tests/
 
-Notes:
-  - Put raw RefSeq archives under data/raw/refseq_bacteria_protein before compiling.
-  - Keep real MinIO and NCBI credentials in .env or environment variables.
-  - Pass extra uv sync options to this script if needed.
 EOF
 }
 
 main() {
   ensure_project_root
+
+  if [ "$RECREATE" -eq 1 ]; then
+    log "Removing .venv"
+    rm -rf .venv
+  fi
+
   ensure_uv
   ensure_python
-  sync_environment "$@"
+  sync_environment
+  install_torch
   prepare_local_files
   verify_install
   install_jupyter_kernel
   persist_path
-  print_next_steps
+  print_done
 }
 
-main "$@"
+main

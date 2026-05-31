@@ -4,6 +4,70 @@ Current training flow:
 
 `{profile, sequence}` pairs -> `train.txt` + `tokenizer_map.json` -> MDC decoder-only pretraining/fine-tuning
 
+## Installation
+
+### Prerequisites
+
+- **Python 3.11+** (managed automatically by `uv`)
+- **uv** package manager (installed automatically if missing)
+- **NVIDIA driver** with `nvidia-smi` working (for GPU variants only)
+
+### Windows (PowerShell)
+
+```powershell
+# GPU with CUDA 12.6 (recommended for NVIDIA GPUs):
+.\install.ps1 -Recreate -Torch cu126
+
+# GPU with CUDA 12.8:
+.\install.ps1 -Recreate -Torch cu128
+
+# CPU only (no GPU):
+.\install.ps1 -Recreate -Torch cpu
+
+# Keep whatever torch uv.lock resolved (auto):
+.\install.ps1 -Recreate -Torch auto
+
+# Skip torch entirely:
+.\install.ps1 -Recreate -Torch none
+```
+
+Optional flags: `-SkipVerify`, `-SkipKernel`, `-Python 3.12`.
+
+### Linux (bash)
+
+```bash
+# GPU with CUDA 12.6:
+bash install.sh --torch cu126
+
+# GPU with CUDA 12.8:
+bash install.sh --torch cu128
+
+# CPU only:
+bash install.sh --torch cpu
+
+# Fresh install (removes .venv first):
+bash install.sh --recreate --torch cu126
+
+# Skip verification and kernel install:
+bash install.sh --torch cu126 --skip-verify --skip-kernel
+```
+
+### Verify GPU
+
+```bash
+uv run python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.version.cuda)"
+```
+
+On a working GPU machine this prints `True` for `cuda.is_available()` and shows the CUDA version.
+
+**Important**: `nvidia-smi` must work before CUDA torch can pass GPU verification. If it fails, install or update your NVIDIA driver first.
+
+### How torch installation works
+
+1. `uv sync --frozen` installs torch from `uv.lock` (PyPI default, usually CPU on Windows).
+2. The installer then uses `pip install --force-reinstall --index-url <wheel-index>` to replace torch with the correct CUDA/CPU variant.
+3. `pyproject.toml` declares `torch>=2.11` in base dependencies so `uv sync` always resolves a torch version compatible with the lock file.
+
 ## Local RefSeq Build
 
 The local RefSeq compiler now writes three training artifacts:
