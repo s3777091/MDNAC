@@ -107,19 +107,9 @@ $VenvPython = Join-Path $ScriptRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path $VenvPython)) { Die '.venv\Scripts\python.exe not found after uv sync.' }
 Write-Host ('venv python: ' + $VenvPython)
 
-# --- Ensure pip ---
-Log 'Ensuring pip'
-$ErrorActionPreference = "Continue"
-& $VenvPython -m ensurepip --upgrade 2>$null
-& $VenvPython -m pip install --upgrade pip setuptools wheel 2>$null
-$ErrorActionPreference = "Stop"
-
-# --- Verify pip works ---
-$pipVer = & $VenvPython -m pip --version 2>&1
-if ($LASTEXITCODE -ne 0) { Die ('pip is broken: ' + $pipVer) }
-Write-Host ('pip: ' + $pipVer)
-
 # --- Install PyTorch ---
+# Use 'uv pip' instead of 'python -m pip' because uv-managed Pythons
+# set PEP 668 EXTERNALLY-MANAGED markers that block direct pip usage.
 if ($Torch -eq 'none') {
     Log 'Skipping PyTorch (--Torch none)'
 }
@@ -133,7 +123,7 @@ else {
     if ($Torch -eq 'cu128') { $indexUrl = 'https://download.pytorch.org/whl/cu128' }
 
     Log ('Installing PyTorch ' + $Torch + ' from ' + $indexUrl)
-    & $VenvPython -m pip install --force-reinstall --index-url $indexUrl torch torchvision torchaudio
+    & $UV pip install --reinstall --index-url $indexUrl --python $VenvPython torch torchvision torchaudio
     if ($LASTEXITCODE -ne 0) { Die 'PyTorch install failed' }
 }
 
@@ -166,7 +156,7 @@ if (-not $SkipVerify) {
     & $VenvPython -c "import sys; print(f'Python {sys.version}')"
     if ($LASTEXITCODE -ne 0) { Die 'Python verification failed' }
 
-    & $VenvPython -c "import pip; print(f'pip {pip.__version__}')"
+    & $UV pip show pip --python $VenvPython 2>$null | Select-String 'Version'
 
     if (($Torch -eq 'cu126') -or ($Torch -eq 'cu128')) {
         Log 'Checking NVIDIA driver'
@@ -207,7 +197,7 @@ print(f'CUDA tensor OK on {x.device}')
 # --- Jupyter kernel ---
 if (-not $SkipKernel) {
     Log 'Installing Jupyter kernel'
-    & $VenvPython -m pip install --upgrade ipykernel 2>$null
+    & $UV pip install --python $VenvPython ipykernel 2>$null
     & $VenvPython -m ipykernel install --user --name microbial-dna-compiler --display-name 'Microbial DNA Compiler (uv GPU)'
 }
 
