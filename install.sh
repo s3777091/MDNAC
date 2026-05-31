@@ -199,7 +199,6 @@ verify_install() {
 
   log "Verifying Python"
   "$venv_python" -c "import sys; print(f'Python {sys.version}')"
-  uv pip show pip 2>/dev/null | grep -i version || true
 
   if [ "$TORCH_VARIANT" = "cu126" ] || [ "$TORCH_VARIANT" = "cu128" ]; then
     log "Checking NVIDIA driver"

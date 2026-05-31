@@ -175,8 +175,6 @@ if (-not $SkipVerify) {
     & $VenvPython -c "import sys; print(f'Python {sys.version}')"
     if ($LASTEXITCODE -ne 0) { Die 'Python verification failed' }
 
-    & $UV pip show pip 2>$null | Select-String 'Version'
-
     if (($Torch -eq 'cu126') -or ($Torch -eq 'cu128')) {
         Log 'Checking NVIDIA driver'
         $nvsmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
