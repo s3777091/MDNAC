@@ -7,6 +7,7 @@ TORCH_MIN_VERSION="${TORCH_MIN_VERSION:-2.11}"
 RECREATE=0
 SKIP_VERIFY=0
 SKIP_KERNEL=0
+TORCH_SYNC_PROTECTED=0
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -138,8 +139,29 @@ prepare_local_files() {
 }
 
 sync_environment() {
+  local -a sync_args=(--frozen --python "$PYTHON_VERSION")
+  local venv_python="$SCRIPT_DIR/.venv/bin/python"
+
+  if [ "$TORCH_VARIANT" = "none" ]; then
+    TORCH_SYNC_PROTECTED=1
+    log "PyTorch sync disabled (--torch none)"
+  elif [ "$RECREATE" -eq 0 ] && [ -x "$venv_python" ]; then
+    if [ "$TORCH_VARIANT" = "auto" ] && torch_auto_install_usable "$venv_python"; then
+      TORCH_SYNC_PROTECTED=1
+      TORCH_VARIANT=$(torch_current_variant "$venv_python")
+      log "Existing PyTorch is usable ($TORCH_VARIANT); uv sync will leave it untouched"
+    elif [ "$TORCH_VARIANT" != "auto" ] && torch_install_matches "$venv_python" "$TORCH_VARIANT"; then
+      TORCH_SYNC_PROTECTED=1
+      log "Existing PyTorch matches $TORCH_VARIANT; uv sync will leave it untouched"
+    fi
+  fi
+
+  if [ "$TORCH_SYNC_PROTECTED" -eq 1 ]; then
+    sync_args+=(--inexact --no-install-package torch --no-install-package torchvision --no-install-package torchaudio)
+  fi
+
   log "Syncing Python environment from uv.lock"
-  uv sync --frozen --python "$PYTHON_VERSION" "${EXTRA_SYNC_ARGS[@]+"${EXTRA_SYNC_ARGS[@]}"}"
+  uv sync "${sync_args[@]}" "${EXTRA_SYNC_ARGS[@]+"${EXTRA_SYNC_ARGS[@]}"}"
 }
 
 detect_cuda_variant() {
@@ -296,6 +318,11 @@ install_torch() {
     die ".venv/bin/python not found after uv sync."
   fi
   echo "venv python: $venv_python"
+
+  if [ "$TORCH_SYNC_PROTECTED" -eq 1 ]; then
+    log "Keeping existing PyTorch; skipping install"
+    return
+  fi
 
   # Ensure pyvenv.cfg exists (uv 0.11+ may not create it for managed envs)
   local pyvenv_cfg="$SCRIPT_DIR/.venv/pyvenv.cfg"
