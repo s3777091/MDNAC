@@ -17,7 +17,7 @@ data:
   cleanup_completed_parts: false
   validate_cached_parts: true
   train_ratio: 0.9
-  batch_size: 2
+  batch_size: 8
   num_workers: 4
   pin_memory: true
   shuffle_parts: true
@@ -41,20 +41,20 @@ model:
     linear_num_key_heads: 16
     linear_num_value_heads: 16
 training:
-  num_epochs: 3
+  num_epochs: 5
   max_steps: null
-  gradient_accumulation_steps: 8
-  save_every_steps: 500
-  eval_freq: 500
-  eval_batches: 2
+  gradient_accumulation_steps: 16
+  save_every_steps: 200
+  eval_freq: 200
+  eval_batches: 64
   grad_clip_norm: 1.0
   save_last: true
   save_best: true
   save_final: true
 optimizer:
   type: muon
-  learning_rate: 0.0003
-  muon_learning_rate: 0.002
+  learning_rate: 0.0002
+  muon_learning_rate: 0.0002
   weight_decay: 0.1
   fused: auto
 runtime:
@@ -64,7 +64,7 @@ runtime:
   data_parallel_device_ids: null
   mixed_precision: fp16
   preflight_vram_check: true
-  target_vram_gb: 14.0
+  target_vram_gb: 28.0
   use_fp32_fallback_linear_attention: false
 resume:
   checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_last.pt
