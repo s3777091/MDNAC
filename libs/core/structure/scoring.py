@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import math
-from collections import Counter
-
 from .types import (
-    PROSTT5_3DI_TOKENS,
     VALID_PROTEIN_AMINO_ACIDS,
     ProteinStructureScore,
     StructurePrediction,
@@ -48,20 +44,6 @@ def length_window_score(sequence: str, *, min_length: int, max_length: int) -> f
     return max(max_length / length, 0.0)
 
 
-def structure_3di_plausibility_score(structure_3di: str | None) -> float:
-    if not structure_3di:
-        return 0.0
-
-    normalized = "".join(str(structure_3di).split()).lower()
-    if not normalized:
-        return 0.0
-
-    valid_fraction = sum(1 for token in normalized if token in PROSTT5_3DI_TOKENS) / len(normalized)
-    repetition_penalty = _max_run_fraction(normalized)
-    entropy_score = _normalized_entropy(normalized)
-    return _clamp01((0.45 * valid_fraction) + (0.35 * entropy_score) + (0.20 * (1.0 - repetition_penalty)))
-
-
 def score_protein_candidate(
     sequence: str,
     *,
@@ -69,6 +51,8 @@ def score_protein_candidate(
     min_length: int = 30,
     max_length: int = 1024,
     max_x_fraction: float = 0.05,
+    geometry_score: float | None = None,
+    contact_score: float | None = None,
     weights: StructureScoringWeights | None = None,
 ) -> ProteinStructureScore:
     resolved_weights = weights or StructureScoringWeights()
@@ -77,24 +61,25 @@ def score_protein_candidate(
     validity = valid_amino_acid_fraction(normalized)
     length = length_window_score(normalized, min_length=min_length, max_length=max_length)
     ambiguity = 1.0 - ambiguity_fraction(normalized)
-    structure_plausibility = structure_3di_plausibility_score(
-        prediction.structure_3di if prediction is not None else None
-    )
     model_confidence = _normalize_model_confidence(prediction)
+    geo_confidence = _clamp01(geometry_score) if geometry_score is not None else 0.0
+    contact_consistency = _clamp01(contact_score) if contact_score is not None else 0.0
 
     component_scores = {
         "validity": validity,
         "length": length,
         "ambiguity": ambiguity,
-        "structure_plausibility": structure_plausibility,
         "model_confidence": model_confidence,
+        "geometry_confidence": geo_confidence,
+        "contact_consistency": contact_consistency,
     }
     total_weight = (
         resolved_weights.validity
         + resolved_weights.length
         + resolved_weights.ambiguity
-        + resolved_weights.structure_plausibility
         + resolved_weights.model_confidence
+        + resolved_weights.geometry_confidence
+        + resolved_weights.contact_consistency
     )
     if total_weight <= 0:
         raise ValueError("At least one scoring weight must be positive.")
@@ -103,8 +88,9 @@ def score_protein_candidate(
         resolved_weights.validity * validity
         + resolved_weights.length * length
         + resolved_weights.ambiguity * ambiguity
-        + resolved_weights.structure_plausibility * structure_plausibility
         + resolved_weights.model_confidence * model_confidence
+        + resolved_weights.geometry_confidence * geo_confidence
+        + resolved_weights.contact_consistency * contact_consistency
     ) / total_weight
 
     reasons: list[str] = []
@@ -138,36 +124,6 @@ def _normalize_model_confidence(prediction: StructurePrediction | None) -> float
             normalized = normalized / 100.0
         return _clamp01(normalized)
     return 0.0
-
-
-def _max_run_fraction(text: str) -> float:
-    if not text:
-        return 1.0
-
-    max_run = 1
-    current_run = 1
-    previous = text[0]
-    for character in text[1:]:
-        if character == previous:
-            current_run += 1
-            max_run = max(max_run, current_run)
-        else:
-            previous = character
-            current_run = 1
-    return max_run / len(text)
-
-
-def _normalized_entropy(text: str) -> float:
-    if not text:
-        return 0.0
-    counts = Counter(text)
-    if len(counts) <= 1:
-        return 0.0
-    entropy = 0.0
-    for count in counts.values():
-        probability = count / len(text)
-        entropy -= probability * math.log(probability)
-    return _clamp01(entropy / math.log(len(counts)))
 
 
 def _clamp01(value: float) -> float:

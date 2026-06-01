@@ -76,18 +76,4 @@ def recommended_structure_providers() -> tuple[ExternalStructureProviderSpec, ..
             ),
             install_hint="Use as a fast first-pass structure confidence provider.",
         ),
-        ExternalStructureProviderSpec(
-            name="ProstT5",
-            provider_type="sequence_structure_language_model",
-            recommended_role="AA-to-3Di structural-token channel and lightweight structure plausibility scorer",
-            strengths=(
-                "bridges amino-acid tokens and Foldseek 3Di structure tokens",
-                "fits auxiliary structure-token training and candidate scoring",
-            ),
-            limitations=(
-                "3Di plausibility is not a full 3D fold validation",
-                "should complement, not replace, final structure prediction",
-            ),
-            install_hint="Use transformers with Rostlab/ProstT5 in an optional adapter.",
-        ),
     )

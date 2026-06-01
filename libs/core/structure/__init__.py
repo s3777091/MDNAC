@@ -1,3 +1,12 @@
+from .candidates import (
+    CandidateValidationConfig,
+    CandidateValidationResult,
+    GeneratedProteinCandidate,
+    rank_candidates,
+    validate_generated_candidate,
+    validate_sequence_basic,
+    validate_structure_prediction,
+)
 from .coevolution import (
     DEFAULT_MSA_ALPHABET,
     apc_correct,
@@ -5,91 +14,70 @@ from .coevolution import (
     parse_fasta_msa,
     top_coevolving_pairs,
 )
+from .contact_constraints import (
+    ContactConstraint,
+    build_contact_constraints_from_msa,
+    evaluate_contact_constraints,
+    evaluate_triangle_geometry,
+)
 from .geometry import (
     contact_precision_at_k,
     pairwise_distances,
     triangle_consistency_score,
     triangle_inequality_violation_rate,
 )
-from .annotate_s3 import (
-    S3Instruction3DiPartSummary,
-    S3Instruction3DiUpdateSummary,
-    annotate_s3_instruction_jsonl_3di,
-)
-from .cache import Sequence3DiCache
-from .instruction_3di import (
-    AA_TO_3DI_PREFIX,
-    DEFAULT_3DI_FIELD,
-    DEFAULT_PROSTT5_MODEL_NAME,
-    Instruction3DiUpdateSummary,
-    Structure3DiBatchProvider,
-    annotate_instruction_jsonl_3di,
-    extract_instruction_protein_sequence,
-    normalize_3di_structure,
-    normalize_prostt5_aa_sequence,
-    usable_instruction_3di,
-)
-from .prostt5_provider import ProstT5Structure3DiProvider
+from .provider_protocols import StructurePredictionProvider
 from .providers import recommended_structure_providers
 from .scoring import (
     ambiguity_fraction,
     compact_protein_sequence,
     length_window_score,
     score_protein_candidate,
-    structure_3di_plausibility_score,
     valid_amino_acid_fraction,
 )
 from .types import (
     CANONICAL_PROTEIN_AMINO_ACIDS,
-    PROSTT5_3DI_TOKENS,
     VALID_PROTEIN_AMINO_ACIDS,
     CoevolutionContact,
     ExternalStructureProviderSpec,
     ProteinStructureScore,
-    StructureModelProvider,
     StructurePrediction,
     StructureScoringWeights,
 )
 
 __all__ = [
-    "AA_TO_3DI_PREFIX",
     "CANONICAL_PROTEIN_AMINO_ACIDS",
-    "DEFAULT_3DI_FIELD",
-    "DEFAULT_MSA_ALPHABET",
-    "DEFAULT_PROSTT5_MODEL_NAME",
-    "PROSTT5_3DI_TOKENS",
-    "VALID_PROTEIN_AMINO_ACIDS",
+    "CandidateValidationConfig",
+    "CandidateValidationResult",
+    "ContactConstraint",
     "CoevolutionContact",
+    "DEFAULT_MSA_ALPHABET",
     "ExternalStructureProviderSpec",
-    "Instruction3DiUpdateSummary",
+    "GeneratedProteinCandidate",
     "ProteinStructureScore",
-    "ProstT5Structure3DiProvider",
-    "S3Instruction3DiPartSummary",
-    "S3Instruction3DiUpdateSummary",
-    "Sequence3DiCache",
-    "Structure3DiBatchProvider",
-    "StructureModelProvider",
     "StructurePrediction",
+    "StructurePredictionProvider",
     "StructureScoringWeights",
+    "VALID_PROTEIN_AMINO_ACIDS",
     "ambiguity_fraction",
-    "annotate_instruction_jsonl_3di",
-    "annotate_s3_instruction_jsonl_3di",
     "apc_correct",
+    "build_contact_constraints_from_msa",
     "compact_protein_sequence",
     "contact_precision_at_k",
-    "extract_instruction_protein_sequence",
+    "evaluate_contact_constraints",
+    "evaluate_triangle_geometry",
     "length_window_score",
     "mutual_information_matrix",
-    "normalize_3di_structure",
-    "normalize_prostt5_aa_sequence",
     "pairwise_distances",
     "parse_fasta_msa",
+    "rank_candidates",
     "recommended_structure_providers",
     "score_protein_candidate",
-    "structure_3di_plausibility_score",
     "top_coevolving_pairs",
     "triangle_consistency_score",
     "triangle_inequality_violation_rate",
-    "usable_instruction_3di",
     "valid_amino_acid_fraction",
+    "validate_generated_candidate",
+    "validate_sequence_basic",
+    "validate_structure_prediction",
 ]

@@ -285,13 +285,55 @@ bash cmd/downsample_instruction_jsonl.sh data/instruction.jsonl --dry-run --keep
 
 Unlike chopping the file head/tail, this keeps at least one example per protein bucket, preserves dataset-group balance, and spreads selected records across each bucket with deterministic systematic sampling.
 
-To add Foldseek-style `3Di` structure tokens to `instruction.jsonl`, use the reusable structure pipeline in `libs.core.structure` or run:
+## Candidate Generation and Validation Pipeline
+
+The recommended pipeline for generating biologically plausible protein sequences:
 
 ```text
-notebooks/stage_2_foundation_model/05_update_instruction_3di_from_s3.ipynb
+profile -> generate many candidates -> cheap sequence filters -> coevolution/contact constraints (when MSA exists) -> structure prediction provider -> geometry/confidence validation -> ranked candidates
 ```
 
-The notebook streams `.jsonl` parts from MinIO/S3, annotates missing top-level `3Di` fields from each protein `output`, uploads annotated parts to a separate prefix, and writes `manifest.3di.json`. It uses a SQLite cache so repeated protein sequences and resumed runs do not call the 3Di model again. The ProstT5 adapter is optional and loads `Rostlab/ProstT5` only when the notebook creates the provider; install `transformers` and `sentencepiece` in the active environment before running it.
+### Key Design Decisions
+
+- **3Di/ProstT5 annotation has been removed** from the active pipeline. It is not required for training or validation.
+- **Biological correctness is not guaranteed** by token generation alone. Generated sequences are candidates that require external validation.
+- **Final candidates require external structure prediction** (e.g., AlphaFold 3, Boltz-2, ESMFold) and validation through geometry/confidence checks.
+- **Coevolution analysis requires a sufficiently deep homologous MSA**. For de novo proteins without homologs, rely on structure prediction confidence and geometry checks instead.
+
+### Pipeline Steps
+
+1. **Profile-conditioned generation**: Generate many candidate protein sequences from a conditioning profile using the trained MDC decoder.
+2. **Cheap sequence filters**: Validate amino acid alphabet, length range, and ambiguity (X fraction).
+3. **Optional coevolution/contact constraints**: When a related MSA is available, use mutual information to identify predicted contacts and check distance feasibility.
+4. **Structure prediction**: Run an external structure prediction provider (AlphaFold, Boltz-2, ESMFold, etc.) on passing candidates.
+5. **Geometry/confidence validation**: Check pLDDT, pTM, iPTM thresholds and triangle consistency of predicted coordinates.
+6. **Ranking**: Sort candidates by composite validation score.
+
+### Usage
+
+```python
+from libs.core.structure import (
+    CandidateValidationConfig,
+    GeneratedProteinCandidate,
+    validate_generated_candidate,
+    rank_candidates,
+)
+
+config = CandidateValidationConfig(
+    min_length=30,
+    max_length=1024,
+    max_x_fraction=0.05,
+    min_plddt=0.7,
+)
+
+candidates = [
+    GeneratedProteinCandidate(profile="dna gyrase", sequence="MPEPTIDE..."),
+    # ... more candidates from generation
+]
+
+validated = [validate_generated_candidate(c, config) for c in candidates]
+ranked = rank_candidates(validated)
+```
 
 If the output folder name matches a direct child folder under the input root, the build automatically scopes to that child folder. For example:
 

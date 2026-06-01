@@ -6,14 +6,12 @@ from typing import Protocol
 
 VALID_PROTEIN_AMINO_ACIDS = frozenset("ACDEFGHIKLMNPQRSTVWYX")
 CANONICAL_PROTEIN_AMINO_ACIDS = frozenset("ACDEFGHIKLMNPQRSTVWY")
-PROSTT5_3DI_TOKENS = frozenset("abcdefghijklmnopqrstuvwxy")
 
 
 @dataclass(slots=True, frozen=True)
 class StructurePrediction:
     sequence: str
     model_name: str
-    structure_3di: str | None = None
     confidence: float | None = None
     plddt: float | None = None
     ptm: float | None = None
@@ -28,8 +26,9 @@ class StructureScoringWeights:
     validity: float = 0.30
     length: float = 0.15
     ambiguity: float = 0.10
-    structure_plausibility: float = 0.25
-    model_confidence: float = 0.20
+    model_confidence: float = 0.25
+    geometry_confidence: float = 0.20
+    contact_consistency: float = 0.0
 
 
 @dataclass(slots=True, frozen=True)
@@ -58,10 +57,3 @@ class ExternalStructureProviderSpec:
     limitations: tuple[str, ...]
     install_hint: str | None = None
     license_note: str | None = None
-
-
-class StructureModelProvider(Protocol):
-    model_name: str
-
-    def predict(self, sequence: str) -> StructurePrediction:
-        ...
