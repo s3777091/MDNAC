@@ -422,6 +422,21 @@ class ProteinPretrainTrainer:
         except FileNotFoundError:
             return ()
 
+    def _split_local_train_val_paths(self, local_paths: tuple[Path, ...]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        if len(local_paths) < 2:
+            return local_paths, ()
+
+        train_ratio = float(self._data_cfg["train_ratio"])
+        if not 0.0 < train_ratio < 1.0:
+            raise ValueError("data.train_ratio must be between 0 and 1.")
+
+        split_index = int(len(local_paths) * train_ratio)
+        split_index = max(1, min(len(local_paths) - 1, split_index))
+
+        train_paths = tuple(local_paths[:split_index])
+        val_paths = tuple(local_paths[split_index:])
+        return train_paths, val_paths
+
     def _build_data_loaders(self):
         context_length = int(self.model_config.context_length)
         stride = self._model_cfg["stride"] or max(1, context_length // 2)
@@ -472,9 +487,11 @@ class ProteinPretrainTrainer:
             )
             train_eval_loader = self._build_eval_streaming_loader(loader_kwargs) if self.is_main_process else None
         elif use_streaming:
+            train_paths, val_paths = self._split_local_train_val_paths(local_paths)
+
             train_loader = create_streaming_protein_lm_dataloader(
                 self.tokenizer,
-                part_paths=local_paths,
+                part_paths=train_paths,
                 shuffle_parts=shuffle_parts,
                 shuffle_examples=shuffle_examples,
                 shuffle_buffer_size=shuffle_buffer_size,
@@ -487,7 +504,7 @@ class ProteinPretrainTrainer:
             train_eval_loader = (
                 create_streaming_protein_lm_dataloader(
                     self.tokenizer,
-                    part_paths=local_paths,
+                    part_paths=train_paths,
                     shuffle_parts=False,
                     shuffle_examples=False,
                     seed=0,
@@ -497,6 +514,20 @@ class ProteinPretrainTrainer:
                 if self.is_main_process
                 else None
             )
+            val_loader = (
+                create_streaming_protein_lm_dataloader(
+                    self.tokenizer,
+                    part_paths=val_paths,
+                    shuffle_parts=False,
+                    shuffle_examples=False,
+                    seed=0,
+                    distributed=False,
+                    **loader_kwargs,
+                )
+                if self.is_main_process and val_paths
+                else None
+            )
+            return train_loader, train_eval_loader, val_loader
         else:
             corpus_text = load_protein_corpus_text_parts(local_paths) if local_paths else ""
             if not corpus_text:
@@ -561,6 +592,12 @@ class ProteinPretrainTrainer:
 
         optimizer_list = list(self.optimizer) if isinstance(self.optimizer, (list, tuple)) else [self.optimizer]
         step_eval_enabled = eval_freq > 0 and not self.runtime.distributed and train_eval_loader is not None
+        if self.is_main_process and self._training_cfg.get("save_best", True) and val_loader is None:
+            raise ValueError(
+                "save_best=true but val_loader is None. "
+                "No fallback to train loss is allowed. "
+                "For local streaming train_part_*.txt, split local_paths into train/val paths first."
+            )
         start_epoch = self._epoch
 
         # Mixed precision setup
