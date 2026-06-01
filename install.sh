@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 TORCH_VARIANT="${TORCH_VARIANT:-auto}"
+TORCH_MIN_VERSION="${TORCH_MIN_VERSION:-2.11}"
 RECREATE=0
 SKIP_VERIFY=0
 SKIP_KERNEL=0
@@ -46,8 +47,8 @@ done
 
 # Validate torch variant
 case "$TORCH_VARIANT" in
-  cu126|cu128|cpu|auto|none) ;;
-  *) die "Invalid --torch value: $TORCH_VARIANT. Must be one of: cu126, cu128, cpu, auto, none" ;;
+  cu126|cu128|cu130|cpu|auto|none) ;;
+  *) die "Invalid --torch value: $TORCH_VARIANT. Must be one of: cu126, cu128, cu130, cpu, auto, none" ;;
 esac
 
 log() {
@@ -158,7 +159,9 @@ detect_cuda_variant() {
   major=$(echo "$cuda_ver" | cut -d. -f1)
   minor=$(echo "$cuda_ver" | cut -d. -f2)
   echo "Detected CUDA driver version: $cuda_ver" >&2
-  if [ "$major" -gt 12 ] || { [ "$major" -eq 12 ] && [ "$minor" -ge 8 ]; }; then
+  if [ "$major" -ge 13 ]; then
+    echo "cu130"
+  elif [ "$major" -eq 12 ] && [ "$minor" -ge 8 ]; then
     echo "cu128"
   elif [ "$major" -eq 12 ] && [ "$minor" -ge 6 ]; then
     echo "cu126"
@@ -166,6 +169,124 @@ detect_cuda_variant() {
     warn "CUDA driver $cuda_ver is older than 12.6. Selecting cpu variant."
     echo "cpu"
   fi
+}
+
+has_nvidia_driver() {
+  have nvidia-smi && nvidia-smi >/dev/null 2>&1
+}
+
+torch_current_variant() {
+  local venv_python="$1"
+
+  "$venv_python" -c '
+try:
+    import torch
+except Exception:
+    raise SystemExit(1)
+
+compiled_cuda = torch.version.cuda
+if compiled_cuda is None:
+    print("cpu")
+else:
+    parts = compiled_cuda.split(".")
+    major = parts[0]
+    minor = parts[1] if len(parts) > 1 else "0"
+    print(f"cu{major}{minor}")
+'
+}
+
+torch_auto_install_usable() {
+  local venv_python="$1"
+  local has_nvidia=0
+
+  if has_nvidia_driver; then
+    has_nvidia=1
+  fi
+
+  "$venv_python" -c '
+import re
+import sys
+
+has_nvidia = sys.argv[1] == "1"
+min_version = sys.argv[2]
+
+try:
+    import torch
+except Exception as exc:
+    print(f"PyTorch import failed: {exc}")
+    raise SystemExit(1)
+
+
+def version_tuple(value):
+    match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", value)
+    if not match:
+        return ()
+    return tuple(int(part or 0) for part in match.groups())
+
+
+torch_version = torch.__version__.split("+", 1)[0]
+compiled_cuda = torch.version.cuda
+cuda_available = torch.cuda.is_available()
+print(f"Found torch {torch.__version__} (CUDA compiled: {compiled_cuda}, CUDA available: {cuda_available})")
+
+if version_tuple(torch_version) < version_tuple(min_version):
+    print(f"PyTorch {torch_version} is older than required {min_version}.")
+    raise SystemExit(1)
+
+if has_nvidia and (compiled_cuda is None or not cuda_available):
+    print("NVIDIA driver found, but installed PyTorch is not CUDA-usable.")
+    raise SystemExit(1)
+
+raise SystemExit(0)
+' "$has_nvidia" "$TORCH_MIN_VERSION"
+}
+
+torch_install_matches() {
+  local venv_python="$1"
+  local requested_variant="$2"
+
+  "$venv_python" -c '
+import re
+import sys
+
+requested_variant = sys.argv[1]
+min_version = sys.argv[2]
+
+try:
+    import torch
+except Exception as exc:
+    print(f"PyTorch import failed: {exc}")
+    raise SystemExit(1)
+
+
+def version_tuple(value):
+    match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", value)
+    if not match:
+        return ()
+    return tuple(int(part or 0) for part in match.groups())
+
+
+torch_version = torch.__version__.split("+", 1)[0]
+compiled_cuda = torch.version.cuda
+print(f"Found torch {torch.__version__} (CUDA compiled: {compiled_cuda})")
+
+if version_tuple(torch_version) < version_tuple(min_version):
+    print(f"PyTorch {torch_version} is older than required {min_version}.")
+    raise SystemExit(1)
+
+if requested_variant == "cpu":
+    if compiled_cuda is None:
+        raise SystemExit(0)
+    print("Installed PyTorch is a CUDA build, but CPU variant was requested.")
+    raise SystemExit(1)
+
+expected_cuda = {"cu126": "12.6", "cu128": "12.8", "cu130": "13.0"}[requested_variant]
+if compiled_cuda and compiled_cuda.startswith(expected_cuda):
+    raise SystemExit(0)
+
+print(f"Installed PyTorch CUDA build does not match requested {requested_variant}.")
+raise SystemExit(1)
+' "$requested_variant" "$TORCH_MIN_VERSION"
 }
 
 install_torch() {
@@ -196,6 +317,13 @@ PYCFG
 
   # Resolve "auto" to concrete variant
   if [ "$TORCH_VARIANT" = "auto" ]; then
+    log "Checking existing PyTorch before selecting an install variant"
+    if torch_auto_install_usable "$venv_python"; then
+      TORCH_VARIANT=$(torch_current_variant "$venv_python")
+      log "Keeping existing PyTorch variant: $TORCH_VARIANT"
+      return
+    fi
+
     log "Auto-detecting PyTorch variant from nvidia-smi"
     TORCH_VARIANT=$(detect_cuda_variant)
     log "Selected PyTorch variant: $TORCH_VARIANT"
@@ -206,11 +334,17 @@ PYCFG
     return
   fi
 
+  if torch_install_matches "$venv_python" "$TORCH_VARIANT"; then
+    log "PyTorch already satisfies >=$TORCH_MIN_VERSION and variant $TORCH_VARIANT; skipping install"
+    return
+  fi
+
   local index_url=""
   case "$TORCH_VARIANT" in
     cpu)   index_url="https://download.pytorch.org/whl/cpu" ;;
     cu126) index_url="https://download.pytorch.org/whl/cu126" ;;
     cu128) index_url="https://download.pytorch.org/whl/cu128" ;;
+    cu130) index_url="https://download.pytorch.org/whl/cu130" ;;
   esac
 
   log "Installing PyTorch $TORCH_VARIANT from $index_url"
@@ -227,14 +361,16 @@ verify_install() {
   log "Verifying Python"
   "$venv_python" -c "import sys; print(f'Python {sys.version}')"
 
-  if [ "$TORCH_VARIANT" = "cu126" ] || [ "$TORCH_VARIANT" = "cu128" ]; then
-    log "Checking NVIDIA driver"
-    if have nvidia-smi; then
-      nvidia-smi
-    else
-      warn "nvidia-smi not found. CUDA verification may fail."
-    fi
-  fi
+  case "$TORCH_VARIANT" in
+    cu*)
+      log "Checking NVIDIA driver"
+      if have nvidia-smi; then
+        nvidia-smi
+      else
+        warn "nvidia-smi not found. CUDA verification may fail."
+      fi
+      ;;
+  esac
 
   if [ "$TORCH_VARIANT" != "none" ]; then
     log "Verifying PyTorch"
@@ -246,15 +382,17 @@ print(f'CUDA available: {torch.cuda.is_available()}')
 if torch.cuda.is_available():
     print(f'GPU device: {torch.cuda.get_device_name(0)}')
 "
-    if [ "$TORCH_VARIANT" = "cu126" ] || [ "$TORCH_VARIANT" = "cu128" ]; then
-      log "Verifying CUDA tensor allocation"
-      "$venv_python" -c "
+    case "$TORCH_VARIANT" in
+      cu*)
+        log "Verifying CUDA tensor allocation"
+        "$venv_python" -c "
 import torch
 assert torch.cuda.is_available(), 'CUDA not available but variant is $TORCH_VARIANT'
 x = torch.randn(256, 256, device='cuda')
 print(f'CUDA tensor OK on {x.device}')
 " || warn "GPU tensor test failed. Check nvidia-smi and driver version."
-    fi
+        ;;
+    esac
   fi
 
   log "Verifying project import"

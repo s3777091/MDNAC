@@ -15,9 +15,8 @@ libs/data/models/trash/*
 !libs/data/models/trash/.gitkeep
 !libs/data/models/README.md
 
-LLMs-from-scratch/
+LLMs-from-scratch/*
 
-# Keep the root models package tracked; libs.core imports models.qwen3_5.
 models/**/*.safetensors
 models/**/*.bin
 models/**/*.pt
