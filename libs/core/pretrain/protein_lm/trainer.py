@@ -433,21 +433,6 @@ class ProteinPretrainTrainer:
         except FileNotFoundError:
             return ()
 
-    def _split_local_train_val_paths(self, local_paths: tuple[Path, ...]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
-        if len(local_paths) < 2:
-            return local_paths, ()
-
-        train_ratio = float(self._data_cfg["train_ratio"])
-        if not 0.0 < train_ratio < 1.0:
-            raise ValueError("data.train_ratio must be between 0 and 1.")
-
-        split_index = int(len(local_paths) * train_ratio)
-        split_index = max(1, min(len(local_paths) - 1, split_index))
-
-        train_paths = tuple(local_paths[:split_index])
-        val_paths = tuple(local_paths[split_index:])
-        return train_paths, val_paths
-
     def _build_data_loaders(self):
         context_length = int(self.model_config.context_length)
         stride = self._model_cfg["stride"] or max(1, context_length // 2)
@@ -478,6 +463,8 @@ class ProteinPretrainTrainer:
         shuffle_buffer_size = self._data_cfg["shuffle_buffer_size"]
         keep_parts = self._data_cfg["keep_downloaded_train_parts"]
         cache_dir = self._paths["train_part_cache_dir"]
+        split_seed = int(self._data_cfg.get("split_seed", 42))
+        train_ratio = float(self._data_cfg["train_ratio"])
 
         if use_minio:
             train_loader = create_streaming_protein_lm_dataloader(
@@ -494,15 +481,26 @@ class ProteinPretrainTrainer:
                 distributed=distributed,
                 rank=rank,
                 world_size=world_size,
+                split="train",
+                train_ratio=train_ratio,
+                split_seed=split_seed,
                 **loader_kwargs,
             )
-            train_eval_loader = self._build_eval_streaming_loader(loader_kwargs) if self.is_main_process else None
+            train_eval_loader = (
+                self._build_eval_streaming_loader(loader_kwargs, split="train")
+                if self.is_main_process
+                else None
+            )
+            val_loader = (
+                self._build_eval_streaming_loader(loader_kwargs, split="val")
+                if self.is_main_process
+                else None
+            )
+            return train_loader, train_eval_loader, val_loader
         elif use_streaming:
-            train_paths, val_paths = self._split_local_train_val_paths(local_paths)
-
             train_loader = create_streaming_protein_lm_dataloader(
                 self.tokenizer,
-                part_paths=train_paths,
+                part_paths=local_paths,
                 shuffle_parts=shuffle_parts,
                 shuffle_examples=shuffle_examples,
                 shuffle_buffer_size=shuffle_buffer_size,
@@ -510,16 +508,22 @@ class ProteinPretrainTrainer:
                 distributed=distributed,
                 rank=rank,
                 world_size=world_size,
+                split="train",
+                train_ratio=train_ratio,
+                split_seed=split_seed,
                 **loader_kwargs,
             )
             train_eval_loader = (
                 create_streaming_protein_lm_dataloader(
                     self.tokenizer,
-                    part_paths=train_paths,
+                    part_paths=local_paths,
                     shuffle_parts=False,
                     shuffle_examples=False,
                     seed=0,
                     distributed=False,
+                    split="train",
+                    train_ratio=train_ratio,
+                    split_seed=split_seed,
                     **loader_kwargs,
                 )
                 if self.is_main_process
@@ -528,14 +532,17 @@ class ProteinPretrainTrainer:
             val_loader = (
                 create_streaming_protein_lm_dataloader(
                     self.tokenizer,
-                    part_paths=val_paths,
+                    part_paths=local_paths,
                     shuffle_parts=False,
                     shuffle_examples=False,
                     seed=0,
                     distributed=False,
+                    split="val",
+                    train_ratio=train_ratio,
+                    split_seed=split_seed,
                     **loader_kwargs,
                 )
-                if self.is_main_process and val_paths
+                if self.is_main_process
                 else None
             )
             return train_loader, train_eval_loader, val_loader
@@ -566,14 +573,13 @@ class ProteinPretrainTrainer:
             )
             return train_loader, train_eval_loader, val_loader
 
-        val_loader = None
-        return train_loader, train_eval_loader, val_loader
-
-    def _build_eval_streaming_loader(self, loader_kwargs: dict) -> Any:
+    def _build_eval_streaming_loader(self, loader_kwargs: dict, *, split: str | None = None) -> Any:
         minio_prefix = self._minio_cfg["train_parts_prefix_uri"]
         minio_uris = self._minio_cfg["train_part_uris"]
         cache_dir = self._paths["train_part_cache_dir"]
         keep_parts = self._data_cfg["keep_downloaded_train_parts"]
+        split_seed = int(self._data_cfg.get("split_seed", 42))
+        train_ratio = float(self._data_cfg["train_ratio"])
         return create_streaming_protein_lm_dataloader(
             self.tokenizer,
             prefix_uri=minio_prefix or None,
@@ -585,6 +591,9 @@ class ProteinPretrainTrainer:
             shuffle_examples=False,
             seed=0,
             distributed=False,
+            split=split,
+            train_ratio=train_ratio,
+            split_seed=split_seed,
             **loader_kwargs,
         )
 
@@ -607,7 +616,7 @@ class ProteinPretrainTrainer:
             raise ValueError(
                 "save_best=true but val_loader is None. "
                 "No fallback to train loss is allowed. "
-                "For local streaming train_part_*.txt, split local_paths into train/val paths first."
+                "Configure a validation split with data.train_ratio and data.split_seed."
             )
         start_epoch = self._epoch
 

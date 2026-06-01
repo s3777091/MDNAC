@@ -19,6 +19,7 @@ data:
   cleanup_completed_parts: false
   validate_cached_parts: true
   train_ratio: 0.9
+  split_seed: 42
   batch_size: 4
   num_workers: 2
   pin_memory: true

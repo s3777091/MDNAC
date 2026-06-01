@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import re
@@ -104,6 +105,9 @@ class ProteinCausalLMStreamingTextDataset(IterableDataset[ProteinCausalLMExample
         shuffle_examples: bool = False,
         shuffle_buffer_size: int = 8192,
         seed: int = 0,
+        split: str | None = None,
+        train_ratio: float = 0.9,
+        split_seed: int = 42,
         distributed: bool | None = None,
         rank: int | None = None,
         world_size: int | None = None,
@@ -153,6 +157,10 @@ class ProteinCausalLMStreamingTextDataset(IterableDataset[ProteinCausalLMExample
         if self.shuffle_buffer_size <= 0:
             raise ValueError("shuffle_buffer_size must be greater than 0.")
         self.seed = int(seed)
+        self.split = split
+        self.train_ratio = float(train_ratio)
+        self.split_seed = int(split_seed)
+        self.epoch = 0
         resolved_rank, _, resolved_world_size = resolve_mdc_distributed_context(
             rank=rank,
             world_size=world_size,
@@ -161,13 +169,16 @@ class ProteinCausalLMStreamingTextDataset(IterableDataset[ProteinCausalLMExample
         self.rank = resolved_rank if self.use_distributed else 0
         self.world_size = resolved_world_size if self.use_distributed else 1
 
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
     def __iter__(self):
         parts, partition_index = _parts_for_current_worker(
             self.parts,
             rank=self.rank,
             world_size=self.world_size,
         )
-        rng = random.Random(self.seed + partition_index)
+        rng = random.Random(self.seed + self.epoch * 1000003 + partition_index)
         if self.shuffle_parts:
             rng.shuffle(parts)
 
@@ -187,6 +198,9 @@ class ProteinCausalLMStreamingTextDataset(IterableDataset[ProteinCausalLMExample
                         context_length=self.context_length,
                         stride=self.stride,
                         source=source,
+                        split=self.split,
+                        train_ratio=self.train_ratio,
+                        split_seed=self.split_seed,
                     )
                     if self.shuffle_examples:
                         examples = _iter_bounded_shuffled_examples(
@@ -203,6 +217,9 @@ class ProteinCausalLMStreamingTextDataset(IterableDataset[ProteinCausalLMExample
                     context_length=self.context_length,
                     stride=self.stride,
                     source=source,
+                    split=self.split,
+                    train_ratio=self.train_ratio,
+                    split_seed=self.split_seed,
                 )
                 if self.shuffle_examples:
                     examples = _iter_bounded_shuffled_examples(
@@ -463,6 +480,9 @@ def create_streaming_protein_lm_dataloader(
     shuffle_examples: bool = False,
     shuffle_buffer_size: int = 8192,
     seed: int = 0,
+    split: str | None = None,
+    train_ratio: float = 0.9,
+    split_seed: int = 42,
     distributed: bool | None = None,
     rank: int | None = None,
     world_size: int | None = None,
@@ -482,6 +502,9 @@ def create_streaming_protein_lm_dataloader(
         shuffle_examples=shuffle_examples,
         shuffle_buffer_size=shuffle_buffer_size,
         seed=seed,
+        split=split,
+        train_ratio=train_ratio,
+        split_seed=split_seed,
         distributed=distributed,
         rank=rank,
         world_size=world_size,
@@ -834,6 +857,28 @@ def _iter_causal_lm_examples(
         )
 
 
+def _line_belongs_to_split(
+    text: str,
+    *,
+    split: str | None,
+    train_ratio: float,
+    split_seed: int,
+) -> bool:
+    if split is None:
+        return True
+
+    if split not in {"train", "val"}:
+        raise ValueError("split must be one of: None, 'train', 'val'")
+
+    key = f"{split_seed}:{text.strip()}".encode("utf-8")
+    digest = hashlib.sha1(key).digest()
+    bucket = int.from_bytes(digest[:8], "big") / float(1 << 64)
+
+    if split == "train":
+        return bucket < train_ratio
+    return bucket >= train_ratio
+
+
 def _iter_causal_lm_examples_from_text_path(
     path: Path,
     tokenizer: SequenceTokenizer,
@@ -841,6 +886,9 @@ def _iter_causal_lm_examples_from_text_path(
     context_length: int,
     stride: int,
     source: str,
+    split: str | None = None,
+    train_ratio: float = 0.9,
+    split_seed: int = 42,
 ):
     saw_text = False
     with Path(path).open("r", encoding="utf-8") as handle:
@@ -850,6 +898,14 @@ def _iter_causal_lm_examples_from_text_path(
 
             saw_text = True
             text = line if line.endswith("\n") else line + "\n"
+            if not _line_belongs_to_split(
+                text,
+                split=split,
+                train_ratio=train_ratio,
+                split_seed=split_seed,
+            ):
+                continue
+
             line_source = f"{source}:{line_number}"
             _validate_protein_corpus_text(text, source=line_source)
             token_ids = tokenizer.encode(text)

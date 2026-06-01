@@ -115,6 +115,7 @@ def load_protein_training_config(
                 True,
             ),
             "train_ratio": float(_nested_get(config_mapping, "data", "train_ratio") or 0.9),
+            "split_seed": int(_nested_get(config_mapping, "data", "split_seed") or 42),
             "batch_size": int(_nested_get(config_mapping, "data", "batch_size") or 2),
             "num_workers": int(_nested_get(config_mapping, "data", "num_workers") or 0),
             "pin_memory": pin_memory,

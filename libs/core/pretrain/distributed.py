@@ -268,6 +268,11 @@ def set_mdc_data_loader_epoch(data_loader: DataLoader[object], epoch: int) -> No
     if callable(set_epoch):
         set_epoch(int(epoch))
 
+    dataset = getattr(data_loader, "dataset", None)
+    dataset_set_epoch = getattr(dataset, "set_epoch", None)
+    if callable(dataset_set_epoch):
+        dataset_set_epoch(int(epoch))
+
 
 def unwrap_mdc_training_model(model: torch.nn.Module) -> torch.nn.Module:
     resolved_model = model

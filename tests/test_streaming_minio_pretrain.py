@@ -18,7 +18,9 @@ from libs.core import (
     discover_protein_train_text_paths,
     load_protein_corpus_text_parts,
     save_mdc_profile_sequence_pretrain_artifacts,
+    set_mdc_data_loader_epoch,
 )
+from libs.core.pretrain.protein_lm.core import _line_belongs_to_split
 from libs.data.training.streaming import list_minio_text_parts
 
 
@@ -203,6 +205,85 @@ class StreamingMinioPretrainTests(unittest.TestCase):
 
         self.assertEqual(1, batch.input_ids.size(0))
         self.assertTrue(torch.any(batch.labels != IGNORE_INDEX))
+
+    def test_streaming_protein_lm_hash_splits_lines(self) -> None:
+        corpus_dir = self.root / "hash-split-parts"
+        corpus_dir.mkdir(parents=True, exist_ok=True)
+        lines = [
+            "<|protein|>MPEPTIDE<|endoftext|>\n",
+            "<|protein|>GLYSERQ<|endoftext|>\n",
+            "<|protein|>MVLSPADKTN<|endoftext|>\n",
+            "<|protein|>GAVLIPFYW<|endoftext|>\n",
+            "<|protein|>STNQDEKRH<|endoftext|>\n",
+            "<|protein|>ACDEFGHIK<|endoftext|>\n",
+        ]
+        part_paths = (corpus_dir / "train_part_1.txt", corpus_dir / "train_part_2.txt")
+        part_paths[0].write_text("".join(lines[:3]), encoding="utf-8")
+        part_paths[1].write_text("".join(lines[3:]), encoding="utf-8")
+        tokenizer = build_or_load_protein_tokenizer_from_text_paths(
+            part_paths,
+            tokenizer_map_path=corpus_dir / "tokenizer_map.json",
+            vocab_size=64,
+        ).tokenizer
+
+        split_kwargs = {"train_ratio": 0.5, "split_seed": 17}
+        expected_train = sum(
+            _line_belongs_to_split(line, split="train", **split_kwargs)
+            for line in lines
+        )
+        expected_val = sum(
+            _line_belongs_to_split(line, split="val", **split_kwargs)
+            for line in lines
+        )
+        self.assertGreater(expected_train, 0)
+        self.assertGreater(expected_val, 0)
+
+        train_loader = create_streaming_protein_lm_dataloader(
+            tokenizer,
+            part_paths=part_paths,
+            context_length=128,
+            stride=128,
+            batch_size=16,
+            split="train",
+            pin_memory=False,
+            **split_kwargs,
+        )
+        val_loader = create_streaming_protein_lm_dataloader(
+            tokenizer,
+            part_paths=part_paths,
+            context_length=128,
+            stride=128,
+            batch_size=16,
+            split="val",
+            pin_memory=False,
+            **split_kwargs,
+        )
+
+        self.assertEqual(expected_train, sum(batch.input_ids.size(0) for batch in train_loader))
+        self.assertEqual(expected_val, sum(batch.input_ids.size(0) for batch in val_loader))
+        self.assertEqual(len(lines), expected_train + expected_val)
+
+    def test_set_epoch_updates_streaming_protein_lm_dataset(self) -> None:
+        corpus_dir = self.root / "epoch-aware-parts"
+        corpus_dir.mkdir(parents=True, exist_ok=True)
+        part_path = corpus_dir / "train_part_1.txt"
+        part_path.write_text(
+            "<|protein|>MPEPTIDE<|endoftext|>\n",
+            encoding="utf-8",
+        )
+        tokenizer = build_or_load_protein_tokenizer(part_path, vocab_size=64).tokenizer
+        data_loader = create_streaming_protein_lm_dataloader(
+            tokenizer,
+            part_paths=(part_path,),
+            context_length=12,
+            stride=6,
+            batch_size=1,
+            pin_memory=False,
+        )
+
+        self.assertEqual(0, data_loader.dataset.epoch)
+        set_mdc_data_loader_epoch(data_loader, 3)
+        self.assertEqual(3, data_loader.dataset.epoch)
 
     def test_streams_profile_aware_batches_from_minio_parts(self) -> None:
         records = [
