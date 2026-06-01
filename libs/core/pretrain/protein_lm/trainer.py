@@ -40,6 +40,7 @@ from libs.core.pretrain.protein_lm.core import (
     load_protein_corpus_text_parts,
     load_protein_pretrain_checkpoint,
     split_protein_corpus_text,
+    _natural_path_sort_key,
 )
 from libs.core.pretrain.protein_lm.support.backbone import (
     build_mdc_config_from_progen_config,
@@ -411,8 +412,18 @@ class ProteinPretrainTrainer:
 
     def _discover_local_paths(self) -> tuple[Path, ...]:
         train_text_path = self._paths["train_text_path"]
+        train_part_cache_dir = self._paths["train_part_cache_dir"]
         part_glob = self._data_cfg["train_part_glob"]
         prefer_parts = self._data_cfg["prefer_local_train_parts"]
+        cached_part_paths = tuple(sorted(train_part_cache_dir.glob(part_glob), key=_natural_path_sort_key))
+
+        if prefer_parts and cached_part_paths:
+            return cached_part_paths
+        if train_text_path.exists():
+            return (train_text_path,)
+        if cached_part_paths:
+            return cached_part_paths
+
         try:
             return discover_protein_train_text_paths(
                 train_text_path,

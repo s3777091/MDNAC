@@ -68,6 +68,36 @@ class ProteinTrainerMetricTests(unittest.TestCase):
         self.assertEqual(4.2, payload["train_loss"])
         self.assertIsNone(payload["val_loss"])
 
+    def test_discovers_local_parts_from_configured_cache_dir(self) -> None:
+        cache_dir = self.root / "data" / "cache" / "protein_train_parts"
+        compiled_dir = self.root / "data" / "compiled" / "refseq_bacteria_protein"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        compiled_dir.mkdir(parents=True, exist_ok=True)
+        (cache_dir / "train_part_10.txt").write_text("<|protein|>CCC<|endoftext|>\n", encoding="utf-8")
+        (cache_dir / "train_part_2.txt").write_text("<|protein|>BBB<|endoftext|>\n", encoding="utf-8")
+        (cache_dir / "train_part_1.txt").write_text("<|protein|>AAA<|endoftext|>\n", encoding="utf-8")
+
+        trainer = ProteinPretrainTrainer.__new__(ProteinPretrainTrainer)
+        trainer._paths = {
+            "train_text_path": compiled_dir / "train.txt",
+            "train_part_cache_dir": cache_dir,
+        }
+        trainer._data_cfg = {
+            "train_part_glob": "train_part_*.txt",
+            "prefer_local_train_parts": True,
+        }
+
+        local_paths = trainer._discover_local_paths()
+
+        self.assertEqual(
+            [
+                cache_dir / "train_part_1.txt",
+                cache_dir / "train_part_2.txt",
+                cache_dir / "train_part_10.txt",
+            ],
+            list(local_paths),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
