@@ -13,7 +13,7 @@ data:
   train_part_glob: train_part_*.txt
   prefer_local_train_parts: true
   stream_local_train_parts: true
-  keep_downloaded_train_parts: true
+  keep_downloaded_train_parts: false
   cleanup_completed_parts: false
   validate_cached_parts: true
   train_ratio: 0.9

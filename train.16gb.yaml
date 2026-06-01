@@ -75,12 +75,12 @@ resume:
   override_optimizer_hyperparameters: true
   resume_state_path: data/checkpoints/protein_from_scratch/resume_state.json
 minio:
-  train_parts_prefix_uri: s3://microbial-dna-compiler/data/protein/parts
+  train_parts_prefix_uri: null
   train_part_uris: []
   manifest_uri: null
-  endpoint_url: https://s3.phuongdong.cloud
+  endpoint_url: null
   access_key: null
   secret_key: null
-  bucket_name: microbial-dna-compiler
+  bucket_name: null
   region_name: null
-  secure: true
+  secure: false
