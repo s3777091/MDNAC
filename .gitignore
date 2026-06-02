@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.notebook_runtime/
 *.egg-info/
 tests/.tmp/
 tests/artifacts/
