@@ -166,10 +166,9 @@ Repository YAML files live under `config/`:
 - `config/train.yaml` — default protein training config for code paths that do not pass `config_path`.
 - `config/train.16gb.yaml` — notebook default for 16GB-style GPU training.
 - `config/train.resume.yaml` — resume config.
-- `config/train.windows.yaml` — Windows-local variant.
 - `config/instruction.16gb.yaml` — stage-3 instruction tuning config.
 
-In notebooks, use the default config after a normal clone, or set `MDNAC_TRAIN_CONFIG` / `MDNAC_INSTRUCTION_CONFIG` to point at another YAML.
+In notebooks, use the default config after a normal clone, or set `MDNAC_TRAIN_CONFIG` / `MDNAC_INSTRUCTION_CONFIG` to point at another YAML. Notebook runtime overrides live in `libs/notebook_runtime.py`, so Windows/Linux/Colab behavior stays in one notebook path instead of separate platform-specific copies.
 
 ### Training Modes
 

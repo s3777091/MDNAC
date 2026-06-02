@@ -8,6 +8,8 @@ from dataclasses import is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
+import torch
+
 
 def is_colab_runtime() -> bool:
     return "google.colab" in sys.modules or "COLAB_RELEASE_TAG" in os.environ
@@ -99,12 +101,8 @@ def bootstrap_notebook(
 
 
 def runtime_summary(repo_dir: Path | str) -> dict[str, Any]:
-    try:
-        import torch
-    except Exception:
-        torch = None
-    cuda_available = bool(torch is not None and torch.cuda.is_available())
-    cuda_device_count = int(torch.cuda.device_count()) if torch is not None else 0
+    cuda_available = bool(torch.cuda.is_available())
+    cuda_device_count = int(torch.cuda.device_count())
     return {
         "repo_dir": str(Path(repo_dir).resolve()),
         "platform": platform.system(),

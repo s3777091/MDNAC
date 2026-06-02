@@ -243,10 +243,7 @@ torch_current_variant() {
   local venv_python="$1"
 
   "$venv_python" -c '
-try:
-    import torch
-except Exception:
-    raise SystemExit(1)
+import torch
 
 compiled_cuda = torch.version.cuda
 if compiled_cuda is None:
@@ -274,11 +271,7 @@ import sys
 has_nvidia = sys.argv[1] == "1"
 min_version = sys.argv[2]
 
-try:
-    import torch
-except Exception as exc:
-    print(f"PyTorch import failed: {exc}")
-    raise SystemExit(1)
+import torch
 
 
 def version_tuple(value):
@@ -325,11 +318,7 @@ import sys
 requested_variant = sys.argv[1]
 min_version = sys.argv[2]
 
-try:
-    import torch
-except Exception as exc:
-    print(f"PyTorch import failed: {exc}")
-    raise SystemExit(1)
+import torch
 
 
 def version_tuple(value):

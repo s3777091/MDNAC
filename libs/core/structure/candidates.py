@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from .geometry import pairwise_distances, triangle_consistency_score
 from .scoring import (
     ambiguity_fraction,
     compact_protein_sequence,
@@ -127,18 +128,12 @@ def validate_structure_prediction(
     # Geometry checks if coordinates are available
     if config.min_triangle_consistency is not None and prediction.coordinates_path is not None:
         if coordinates_loader is not None:
-            try:
-                from .geometry import pairwise_distances, triangle_consistency_score
-
-                coordinates = coordinates_loader(prediction.coordinates_path)
-                distances = pairwise_distances(coordinates)
-                tri_score = triangle_consistency_score(distances)
-                scores["geometry_confidence"] = tri_score
-                if tri_score < config.min_triangle_consistency:
-                    reasons.append("low_triangle_consistency")
-            except Exception:
-                reasons.append("geometry_evaluation_failed")
-                scores["geometry_confidence"] = 0.0
+            coordinates = coordinates_loader(prediction.coordinates_path)
+            distances = pairwise_distances(coordinates)
+            tri_score = triangle_consistency_score(distances)
+            scores["geometry_confidence"] = tri_score
+            if tri_score < config.min_triangle_consistency:
+                reasons.append("low_triangle_consistency")
         else:
             reasons.append("missing_coordinates_loader")
             scores["geometry_confidence"] = 0.0
