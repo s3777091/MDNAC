@@ -1,0 +1,66 @@
+paths:
+  instruction_jsonl_path: data/compiled/refseq_bacteria_protein/instruction.jsonl
+  instruction_part_dir: data/compiled/refseq_bacteria_protein
+  artifact_source_jsonl: data/compiled/refseq_bacteria_protein/instruction.jsonl
+  base_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
+  checkpoint_dir: data/checkpoints/protein_instruction
+  artifact_dir: data/compiled/refseq_bacteria_instruction_profile
+  sequence_tokenizer_map_path: data/compiled/refseq_bacteria_protein/tokenizer_map.json
+
+schema:
+  default_sequence_type: protein
+  instruction_field: instruction
+  input_field: input
+  output_field: output
+
+data:
+  prefer_instruction_parts: true
+  instruction_part_glob: instruction_part_*.jsonl
+  train_ratio: 0.95
+  split_seed: 42
+  batch_size: 2
+  num_workers: 4
+  pin_memory: auto
+  shuffle_files: true
+  shuffle_records: true
+  shuffle_buffer_size: 4096
+
+artifacts:
+  profile_vocab_size: 256
+  kmer_size: 3
+  auto_detect_sequence_tokenizer_map: true
+  rebuild_artifacts: false
+
+training:
+  num_epochs: 1
+  max_steps:
+  gradient_accumulation_steps: 16
+  eval_freq: 20
+  eval_batches: 64
+  save_every_steps: 100
+  grad_clip_norm: 1.0
+  save_last: true
+  save_best: true
+  save_final: true
+  train_on_prompt: false
+  include_separator_in_loss: false
+
+optimizer:
+  type: muon
+  learning_rate: 0.0002
+  muon_learning_rate: 0.0002
+  weight_decay: 0.1
+  fused: auto
+
+runtime:
+  device: auto
+  multi_gpu_mode: auto
+  ddp_find_unused_parameters: false
+  data_parallel_device_ids:
+  mixed_precision: fp16
+  seed: 123
+
+resume:
+  resume_if_available: true
+  restore_optimizer_state: true
+  strict_backbone: true
