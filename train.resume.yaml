@@ -1,0 +1,95 @@
+mode:
+  name: resume
+  resume_if_available: true
+
+paths:
+  train_text_path: data/compiled/refseq_bacteria_protein/train.txt
+  tokenizer_map_path: tokenizer_map.json
+  checkpoint_dir: data/checkpoints/protein_from_scratch
+  train_part_cache_dir: data/cache/protein_train_parts
+  resume_state_path: data/checkpoints/protein_from_scratch/resume_state.json
+  metrics_history_path: data/checkpoints/protein_from_scratch/metrics_history.jsonl
+  training_config_snapshot_path: data/checkpoints/protein_from_scratch/training_config.snapshot.json
+
+data:
+  train_part_glob: train_part_*.txt
+  prefer_local_train_parts: true
+  stream_local_train_parts: true
+  keep_downloaded_train_parts: false
+  cleanup_completed_parts: false
+  validate_cached_parts: true
+  train_ratio: 0.9
+  split_seed: 42
+  batch_size: 8
+  num_workers: 4
+  pin_memory: true
+  shuffle_parts: true
+  shuffle_examples: true
+  shuffle_buffer_size: 4096
+
+model:
+  progen_model_size: 0.8B
+  context_length: 512
+  stride: 256
+  tokenizer_vocab_size: 256
+  rebuild_tokenizer: false
+  progen_config_overrides:
+    emb_dim: 1024
+    n_heads: 16
+    n_layers: 16
+    hidden_dim: 4096
+    head_dim: 64
+    n_kv_groups: 4
+    linear_key_head_dim: 64
+    linear_value_head_dim: 64
+    linear_num_key_heads: 16
+    linear_num_value_heads: 16
+
+training:
+  num_epochs: 1
+  max_steps: 500
+  gradient_accumulation_steps: 16
+  save_every_steps: 100
+  eval_freq: 20
+  eval_batches: 64
+  grad_clip_norm: 1.0
+  save_last: true
+  save_best: true
+  save_final: true
+
+optimizer:
+  type: muon
+  learning_rate: 0.00005
+  muon_learning_rate: 0.00005
+  weight_decay: 0.1
+  fused: auto
+
+runtime:
+  device: auto
+  multi_gpu_mode: auto
+  ddp_find_unused_parameters: false
+  data_parallel_device_ids: null
+  mixed_precision: fp16
+  preflight_vram_check: true
+  target_vram_gb: 28.0
+  use_fp32_fallback_linear_attention: false
+
+resume:
+  checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
+  output_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_last.pt
+  best_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
+  final_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_final.pt
+  restore_optimizer_state: true
+  override_optimizer_hyperparameters: true
+  resume_state_path: data/checkpoints/protein_from_scratch/resume_state.json
+
+minio:
+  train_parts_prefix_uri: null
+  train_part_uris: []
+  manifest_uri: null
+  endpoint_url: null
+  access_key: null
+  secret_key: null
+  bucket_name: null
+  region_name: null
+  secure: false
