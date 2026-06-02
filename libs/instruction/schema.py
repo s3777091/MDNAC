@@ -20,6 +20,10 @@ RESERVED_TRAIN_TOKENS = (
 DEFAULT_INSTRUCTION_FIELD = "instruction"
 DEFAULT_INPUT_FIELD = "input"
 DEFAULT_OUTPUT_FIELD = "output"
+INSTRUCTION_PROMPT_PREAMBLE = (
+    "Below is an instruction that describes a task. "
+    "Write a response that appropriately completes the request."
+)
 
 
 @dataclass(frozen=True)
@@ -84,7 +88,6 @@ def clean_profile_text(value: Any) -> str:
         cleaned.replace("\r", " ")
         .replace("\n", " ")
         .replace("\t", " ")
-        .replace(";", ",")
         .strip()
     )
     return " ".join(cleaned.split())
@@ -92,6 +95,14 @@ def clean_profile_text(value: Any) -> str:
 
 def compact_sequence_text(value: Any) -> str:
     return "".join(str(value or "").split()).upper()
+
+
+def format_instruction_prompt(instruction: str, input_text: str = "") -> str:
+    prompt = f"{INSTRUCTION_PROMPT_PREAMBLE}\n\n### Instruction:\n{instruction}"
+    if input_text:
+        prompt += f"\n\n### Input:\n{input_text}"
+    prompt += "\n\n### Response:\n"
+    return clean_profile_text(prompt)
 
 
 def instruction_record_from_payload(
@@ -126,7 +137,8 @@ def instruction_record_from_payload(
         or metadata.get("sequence_type")
         or default_sequence_type
     ).strip().lower()
-    profile = instruction if not input_text else f"{instruction}; input {input_text}"
+    profile = format_instruction_prompt(instruction, input_text)
+    metadata.setdefault("instruction_prompt_format", "llms_from_scratch_ch07")
     return MDCProfileSequenceRecord(
         profile=profile,
         sequence=sequence,
@@ -264,10 +276,12 @@ def audit_instruction_jsonl(
                 output_format_counts[str(payload.get("output_format") or "").strip() or "unspecified"] += 1
                 valid_rows += 1
                 if len(preview) < preview_rows:
+                    input_text = clean_profile_text(payload.get(input_field))
                     preview.append(
                         {
                             "instruction": instruction[:240],
-                            "input": clean_profile_text(payload.get(input_field))[:240],
+                            "input": input_text[:240],
+                            "profile_prompt": format_instruction_prompt(instruction, input_text)[:360],
                             "output_prefix": sequence[:80],
                             "output_length": len(sequence),
                             "sequence_type": sequence_type,

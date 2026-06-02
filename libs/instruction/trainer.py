@@ -23,7 +23,7 @@ from libs.core.pretrain.distributed import (
 )
 from libs.core.pretrain.profiled import (
     MDCProfileSequencePretrainArtifacts,
-    save_mdc_profile_sequence_pretrain_from_instruction_jsonl,
+    save_mdc_profile_sequence_pretrain_artifacts,
 )
 from libs.core.pretrain.protein_lm.core import (
     _natural_path_sort_key,
@@ -46,7 +46,7 @@ from libs.core.pretrain.training_config import (
 )
 
 from .data import create_instruction_dataloader, count_instruction_split_records
-from .schema import audit_instruction_jsonl, resolve_instruction_paths
+from .schema import audit_instruction_jsonl, iter_instruction_records, resolve_instruction_paths
 
 
 INSTRUCTION_CHECKPOINT_FAMILY = "mdc_profile_sequence_instruction"
@@ -62,6 +62,7 @@ class InstructionTrainingConfig:
     sequence_tokenizer_map_path: str | Path | None = None
     auto_detect_sequence_tokenizer_map: bool = True
     rebuild_artifacts: bool = False
+    artifact_profile_sample_size: int = 100_000
     default_sequence_type: str = "protein"
     instruction_field: str = "instruction"
     input_field: str = "input"
@@ -206,6 +207,9 @@ def build_instruction_training_config(
             True,
         ),
         rebuild_artifacts=_bool_value(rebuild_artifacts_value, False),
+        artifact_profile_sample_size=int(
+            _config_value(config_mapping, ("artifacts", "profile_sample_size")) or 100_000
+        ),
         default_sequence_type=str(
             _config_value(config_mapping, ("schema", "default_sequence_type")) or "protein"
         ),
@@ -301,6 +305,35 @@ def _resolve_optional_project_path(value: Any, *, project_root: Path) -> Path | 
     if isinstance(value, str) and not value.strip():
         return None
     return _as_project_path(value, project_root=project_root)
+
+
+def _sample_instruction_records_for_artifacts(
+    path: Path,
+    *,
+    default_sequence_type: str,
+    instruction_field: str,
+    input_field: str,
+    output_field: str,
+    sample_size: int,
+):
+    if sample_size <= 0:
+        raise ValueError("artifact_profile_sample_size must be positive.")
+    records = []
+    for index, record in enumerate(
+        iter_instruction_records(
+            path,
+            default_sequence_type=default_sequence_type,
+            instruction_field=instruction_field,
+            input_field=input_field,
+            output_field=output_field,
+        )
+    ):
+        if index >= sample_size:
+            break
+        records.append(record)
+    if not records:
+        raise ValueError(f"Instruction JSONL does not contain any valid records: {path}")
+    return tuple(records)
 
 
 @dataclass(frozen=True)
@@ -490,14 +523,34 @@ class InstructionTrainer:
                 f"Artifact source instruction JSONL not found: {artifact_source_jsonl}"
             )
 
-        save_mdc_profile_sequence_pretrain_from_instruction_jsonl(
+        records = _sample_instruction_records_for_artifacts(
             artifact_source_jsonl,
-            self.artifact_dir,
             default_sequence_type=self.config.default_sequence_type,
+            instruction_field=self.config.instruction_field,
+            input_field=self.config.input_field,
+            output_field=self.config.output_field,
+            sample_size=self.config.artifact_profile_sample_size,
+        )
+        sequence_types = {record.sequence_type for record in records}
+        if len(sequence_types) != 1:
+            raise ValueError(
+                "The current MDC profile-aware instruction format requires a single sequence_type "
+                "across instruction records."
+            )
+
+        sequence_tokenizer_map_path = self.config.sequence_tokenizer_map_path
+        if sequence_tokenizer_map_path is None and self.config.auto_detect_sequence_tokenizer_map:
+            adjacent_tokenizer_map_path = artifact_source_jsonl.with_name("tokenizer_map.json")
+            if adjacent_tokenizer_map_path.exists():
+                sequence_tokenizer_map_path = adjacent_tokenizer_map_path
+
+        save_mdc_profile_sequence_pretrain_artifacts(
+            records,
+            self.artifact_dir,
+            sequence_type=next(iter(sequence_types)),
             kmer_size=self.config.kmer_size,
             profile_vocab_size=self.config.profile_vocab_size,
-            sequence_tokenizer_map_path=self.config.sequence_tokenizer_map_path,
-            auto_detect_sequence_tokenizer_map=self.config.auto_detect_sequence_tokenizer_map,
+            sequence_tokenizer_map_path=sequence_tokenizer_map_path,
         )
         return MDCProfileSequencePretrainArtifacts.from_tokenizer_map_file(tokenizer_map_path)
 
