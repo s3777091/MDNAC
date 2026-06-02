@@ -22,30 +22,6 @@ def generate_profile_conditioned_protein(
     top_k: int | None = 50,
     num_candidates: int = 32,
 ) -> tuple[GeneratedProteinCandidate, ...]:
-    """Generate multiple protein sequence candidates conditioned on a profile.
-
-    Encodes the profile using the MDC artifacts, builds a fused prompt
-    [BOS] profile_ids [SEP] protein_start, and autoregressively generates
-    protein tokens only. Stops at EOS/endoftext.
-
-    Args:
-        model: Trained MDC decoder model.
-        artifacts: Profile-sequence pretrain artifacts with tokenizers and layout.
-        profile: The conditioning profile text.
-        device: Torch device for generation.
-        max_new_tokens: Maximum number of protein tokens to generate per candidate.
-        temperature: Sampling temperature (0.0 for greedy).
-        top_k: Top-k filtering. None disables it.
-        num_candidates: Number of candidate sequences to generate.
-
-    Returns:
-        Tuple of GeneratedProteinCandidate instances with decoded sequences.
-
-    Raises:
-        NotImplementedError: If the model/artifacts API does not support
-            fused prompt construction. This is a placeholder for integration
-            with the full MDC fused-vocabulary generation loop.
-    """
     import torch as _torch
 
     from libs.core.pretrain.profiled import (

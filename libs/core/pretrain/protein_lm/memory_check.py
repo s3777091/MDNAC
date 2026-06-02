@@ -1,8 +1,8 @@
 """CLI: Check VRAM memory requirements for protein pretraining.
 
 Usage:
-    python -m libs.core.pretrain.protein_lm.memory_check --config train.yaml --max-vram-gb 16
-    python -m libs.core.pretrain.protein_lm.memory_check --config train.yaml --max-vram-gb 16 --write train.16gb.yaml
+    python -m libs.core.pretrain.protein_lm.memory_check --config config/train.yaml --max-vram-gb 16
+    python -m libs.core.pretrain.protein_lm.memory_check --config config/train.yaml --max-vram-gb 16 --write config/train.16gb.yaml
 """
 from __future__ import annotations
 
@@ -37,8 +37,8 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=str,
-        default="train.yaml",
-        help="Path to train.yaml config file.",
+        default="config/train.yaml",
+        help="Path to protein training YAML config file.",
     )
     parser.add_argument(
         "--max-vram-gb",

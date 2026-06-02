@@ -12,7 +12,8 @@ from libs.data.config import DataConfig, MinioConfig
 
 from .training import create_muon_optimizers
 
-DEFAULT_PROTEIN_TRAIN_CONFIG_PATH = Path("train.yaml")
+DEFAULT_PROTEIN_TRAIN_CONFIG_PATH = Path("config/train.yaml")
+LEGACY_PROTEIN_TRAIN_CONFIG_PATH = Path("train.yaml")
 
 
 def load_protein_training_config(
@@ -362,12 +363,24 @@ def describe_protein_training_optimizers(
 
 def _resolve_config_path(project_root: Path, config_path: Path | str | None) -> Path:
     if config_path is None:
-        return project_root / DEFAULT_PROTEIN_TRAIN_CONFIG_PATH
+        preferred_path = project_root / DEFAULT_PROTEIN_TRAIN_CONFIG_PATH
+        if preferred_path.exists():
+            return preferred_path
+        legacy_path = project_root / LEGACY_PROTEIN_TRAIN_CONFIG_PATH
+        if legacy_path.exists():
+            return legacy_path
+        return preferred_path
 
     resolved_path = Path(config_path)
     if resolved_path.is_absolute():
         return resolved_path
-    return (project_root / resolved_path).resolve()
+    project_path = (project_root / resolved_path).resolve()
+    if project_path.exists():
+        return project_path
+    config_path_candidate = (project_root / "config" / resolved_path).resolve()
+    if config_path_candidate.exists():
+        return config_path_candidate
+    return project_path
 
 
 def _load_yaml_mapping(config_path: Path) -> dict[str, Any]:
@@ -382,7 +395,7 @@ def _load_yaml_mapping(config_path: Path) -> dict[str, Any]:
     if loaded is None:
         return {}
     if not isinstance(loaded, Mapping):
-        raise ValueError("train.yaml must contain a top-level mapping")
+        raise ValueError("training config YAML must contain a top-level mapping")
     return dict(loaded)
 
 
@@ -399,7 +412,7 @@ def _mapping_value(value: Any, *, default: Mapping[str, Any]) -> Mapping[str, An
     if value is None:
         return default
     if not isinstance(value, Mapping):
-        raise ValueError("Expected a mapping value in train.yaml")
+        raise ValueError("Expected a mapping value in training config YAML")
     return value
 
 
@@ -486,7 +499,7 @@ def _string_sequence(value: Any) -> tuple[str, ...]:
     if isinstance(value, str):
         return (value,)
     if not isinstance(value, Sequence):
-        raise ValueError("Expected a sequence of strings in train.yaml")
+        raise ValueError("Expected a sequence of strings in training config YAML")
     return tuple(str(item) for item in value)
 
 

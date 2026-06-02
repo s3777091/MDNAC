@@ -59,10 +59,8 @@ def find_repo_dir(start: Path | str | None = None, *, env_var: str = "MDNAC_REPO
     if is_colab_runtime():
         candidates.extend(
             [
-                Path("/content/Microbial DNA Compiler"),
-                Path("/content/Microbial-DNA-Compiler"),
-                Path("/content/drive/MyDrive/Microbial DNA Compiler"),
-                Path("/content/drive/MyDrive/Microbial-DNA-Compiler"),
+                Path("/content/MDNAC"),
+                Path("/content/drive/MyDrive/MDNAC"),
             ]
         )
 
@@ -173,6 +171,10 @@ def materialize_notebook_training_config(
     if not resolved_config_path.is_absolute():
         base_dir = find_repo_dir(project_root) if project_root is not None else Path.cwd()
         resolved_config_path = (base_dir / resolved_config_path).resolve()
+        if not resolved_config_path.exists():
+            config_path_candidate = (base_dir / "config" / Path(config_path).expanduser()).resolve()
+            if config_path_candidate.exists():
+                resolved_config_path = config_path_candidate
     else:
         resolved_config_path = resolved_config_path.resolve()
 

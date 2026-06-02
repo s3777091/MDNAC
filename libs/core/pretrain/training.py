@@ -1,12 +1,26 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from typing import Protocol, TypeAlias
 
 import torch
 import torch.nn.functional as F
 
 from libs.core.interfaces import CausalLMBatch
 from .distributed import set_mdc_data_loader_epoch, unwrap_mdc_training_model
+
+
+class SupportsCausalLMBatchForward(Protocol):
+    def train(self, mode: bool = True) -> object: ...
+
+    def eval(self) -> object: ...
+
+    def parameters(self, recurse: bool = True) -> Iterable[torch.nn.Parameter]: ...
+
+    def forward_causal_lm_batch(self, batch: CausalLMBatch) -> torch.Tensor: ...
+
+
+CausalLMModelLike: TypeAlias = torch.nn.Module | SupportsCausalLMBatchForward
 
 
 def compute_mdc_causal_lm_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
@@ -77,7 +91,7 @@ def create_moon_optimizers(
 
 
 def evaluate_mdc_causal_lm_batch_loss(
-    model_or_app,
+    model_or_app: CausalLMModelLike,
     batches: Iterable[CausalLMBatch],
     *,
     device: torch.device | str,
@@ -111,8 +125,8 @@ def evaluate_mdc_causal_lm_batch_loss(
 
 
 def run_mdc_causal_lm_batch_epoch(
-    model_or_app,
-    data_loader,
+    model_or_app: CausalLMModelLike,
+    data_loader: Iterable[CausalLMBatch],
     optimizer: torch.optim.Optimizer | Sequence[torch.optim.Optimizer],
     *,
     device: torch.device | str,
@@ -160,7 +174,7 @@ def _move_causal_lm_batch_to_device(
 
 
 def _forward_causal_lm_batch(
-    model_or_app,
+    model_or_app: CausalLMModelLike,
     batch: CausalLMBatch,
 ) -> torch.Tensor:
     if unwrap_mdc_training_model(model_or_app) is not model_or_app:

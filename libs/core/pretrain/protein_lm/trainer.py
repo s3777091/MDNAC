@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,14 +10,12 @@ from typing import Any
 import torch
 
 from libs.core.interfaces import CausalLMBatch
-from libs.core.mdc.config import MDCModelConfig
 from libs.core.mdc import MDCDecoderModel
+from libs.core.mdc.config import MDCModelConfig
 from libs.core.pretrain.distributed import (
     MDCTrainingRuntime,
-    prepare_mdc_training_runtime,
     set_mdc_data_loader_epoch,
-    unwrap_mdc_training_model,
-    cleanup_mdc_distributed_training,
+    prepare_mdc_training_runtime,
 )
 from libs.core.pretrain.training import (
     compute_mdc_causal_lm_loss,
@@ -32,20 +29,13 @@ from libs.core.pretrain.training_config import (
 from libs.core.pretrain.protein_lm.core import (
     build_or_load_protein_tokenizer,
     build_or_load_protein_tokenizer_from_text_paths,
-    count_trainable_parameters,
-    create_protein_lm_dataloader,
-    create_streaming_protein_lm_dataloader,
     discover_protein_train_text_paths,
-    generate_protein_text,
-    load_protein_corpus_text_parts,
     load_protein_pretrain_checkpoint,
-    split_protein_corpus_text,
     _natural_path_sort_key,
 )
 from libs.core.pretrain.protein_lm.support.backbone import (
     build_mdc_config_from_progen_config,
     build_progen_config,
-    extract_protein_backbone_config,
     is_supported_protein_checkpoint_family,
 )
 from libs.core.pretrain.protein_lm.resume_state import (
@@ -56,7 +46,23 @@ from libs.core.pretrain.protein_lm.resume_state import (
     update_resume_state_progress,
 )
 from libs.core.pretrain.protein_lm.memory import run_preflight_vram_check
-from libs.core.pretrain.protein_lm.services import CheckpointService, Evaluator, MetricsWriter
+from libs.core.pretrain.protein_lm.services import (
+    CheckpointService,
+    DataLoaderFactory,
+    Evaluator,
+    GradientAccumulator,
+    LoaderBundle,
+    MetricsWriter,
+    OptimizerBundle,
+    PrecisionContext,
+    TrainerComponents,
+    TrainerState,
+    TrainingLoopSettings,
+    optimizer_list,
+    resolve_precision_context,
+    step_optimizers,
+    zero_grad,
+)
 from libs.data.training.tokenizer import SequenceTokenizer
 
 
@@ -123,19 +129,8 @@ class ProteinPretrainTrainer:
         self._minio_cfg = self.config["minio"]
         self._mode_cfg = self.config["mode"]
 
-        self.runtime: MDCTrainingRuntime | None = None
-        self.model: torch.nn.Module | None = None
-        self.optimizer: Any = None
-        self.tokenizer: SequenceTokenizer | None = None
-        self.model_config: MDCModelConfig | None = None
-
-        self._global_step = 0
-        self._tokens_seen = 0
-        self._epoch = 0
-        self._train_losses: list[float] = []
-        self._val_losses: list[float] = []
-        self._best_val_loss = math.inf
-        self._best_metric_name = "val_loss"
+        self._components = TrainerComponents()
+        self._state = TrainerState()
         self._resume_state: dict[str, Any] | None = None
 
         self._checkpoint_service = CheckpointService(
@@ -157,6 +152,116 @@ class ProteinPretrainTrainer:
     @property
     def is_main_process(self) -> bool:
         return self.runtime is not None and self.runtime.is_main_process
+
+    def _ensure_components(self) -> TrainerComponents:
+        components = getattr(self, "_components", None)
+        if components is None:
+            components = TrainerComponents()
+            self._components = components
+        return components
+
+    def _ensure_state(self) -> TrainerState:
+        state = getattr(self, "_state", None)
+        if state is None:
+            state = TrainerState()
+            self._state = state
+        return state
+
+    @property
+    def runtime(self) -> MDCTrainingRuntime | None:
+        return self._ensure_components().runtime
+
+    @runtime.setter
+    def runtime(self, value: MDCTrainingRuntime | None) -> None:
+        self._ensure_components().runtime = value
+
+    @property
+    def model(self) -> torch.nn.Module | None:
+        return self._ensure_components().model
+
+    @model.setter
+    def model(self, value: torch.nn.Module | None) -> None:
+        self._ensure_components().model = value
+
+    @property
+    def optimizer(self) -> OptimizerBundle | None:
+        return self._ensure_components().optimizer
+
+    @optimizer.setter
+    def optimizer(self, value: OptimizerBundle | None) -> None:
+        self._ensure_components().optimizer = value
+
+    @property
+    def tokenizer(self) -> SequenceTokenizer | None:
+        return self._ensure_components().tokenizer
+
+    @tokenizer.setter
+    def tokenizer(self, value: SequenceTokenizer | None) -> None:
+        self._ensure_components().tokenizer = value
+
+    @property
+    def model_config(self) -> MDCModelConfig | None:
+        return self._ensure_components().model_config
+
+    @model_config.setter
+    def model_config(self, value: MDCModelConfig | None) -> None:
+        self._ensure_components().model_config = value
+
+    @property
+    def _global_step(self) -> int:
+        return self._ensure_state().global_step
+
+    @_global_step.setter
+    def _global_step(self, value: int) -> None:
+        self._ensure_state().global_step = int(value)
+
+    @property
+    def _tokens_seen(self) -> int:
+        return self._ensure_state().tokens_seen
+
+    @_tokens_seen.setter
+    def _tokens_seen(self, value: int) -> None:
+        self._ensure_state().tokens_seen = int(value)
+
+    @property
+    def _epoch(self) -> int:
+        return self._ensure_state().epoch
+
+    @_epoch.setter
+    def _epoch(self, value: int) -> None:
+        self._ensure_state().epoch = int(value)
+
+    @property
+    def _train_losses(self) -> list[float]:
+        return self._ensure_state().train_losses
+
+    @_train_losses.setter
+    def _train_losses(self, value: list[float]) -> None:
+        self._ensure_state().train_losses = list(value)
+
+    @property
+    def _val_losses(self) -> list[float]:
+        return self._ensure_state().val_losses
+
+    @_val_losses.setter
+    def _val_losses(self, value: list[float]) -> None:
+        self._ensure_state().val_losses = list(value)
+
+    @property
+    def _best_val_loss(self) -> float:
+        return self._ensure_state().best_val_loss
+
+    @_best_val_loss.setter
+    def _best_val_loss(self, value: float) -> None:
+        self._ensure_state().best_val_loss = float(value)
+
+    @property
+    def _best_metric_name(self) -> str:
+        return self._ensure_state().best_metric_name
+
+    @_best_metric_name.setter
+    def _best_metric_name(self, value: str) -> None:
+        self._ensure_state().best_metric_name = str(value)
 
     def train(self) -> ProteinPretrainResult:
         mode = self._resolve_mode()
@@ -204,13 +309,13 @@ class ProteinPretrainTrainer:
         self._run_preflight_if_enabled()
 
         self._log("📂 [5/6] Building data loaders...")
-        train_loader, train_eval_loader, val_loader = self._build_data_loaders()
+        loaders = self._build_data_loaders()
         self._log("✅ Data loaders ready")
 
         self._init_resume_state("train_from_scratch")
 
         self._log("🏋️ [6/6] Starting training loop...")
-        self._training_loop(train_loader, train_eval_loader, val_loader)
+        self._training_loop(loaders)
         self._log("🎉 Training complete!")
         return self._build_result()
 
@@ -267,12 +372,12 @@ class ProteinPretrainTrainer:
         self._run_preflight_if_enabled()
 
         self._log("📂 [6/6] Building data loaders...")
-        train_loader, train_eval_loader, val_loader = self._build_data_loaders()
+        loaders = self._build_data_loaders()
         self._log("✅ Data loaders ready")
         self._init_resume_state("resume")
 
         self._log("🏋️ Resuming training loop...")
-        self._training_loop(train_loader, train_eval_loader, val_loader)
+        self._training_loop(loaders)
         self._log("🎉 Training complete!")
         return self._build_result()
 
@@ -408,7 +513,7 @@ class ProteinPretrainTrainer:
         if peak is not None:
             self._log(f"✅ Preflight passed — peak={peak:.2f}GB / target={target_vram_gb:.1f}GB")
         else:
-            self._log(f"✅ Preflight skipped (no CUDA measurement available)")
+            self._log("✅ Preflight skipped (no CUDA measurement available)")
 
     def _discover_local_paths(self) -> tuple[Path, ...]:
         train_text_path = self._paths["train_text_path"]
@@ -433,325 +538,181 @@ class ProteinPretrainTrainer:
         except FileNotFoundError:
             return ()
 
-    def _build_data_loaders(self):
-        context_length = int(self.model_config.context_length)
-        stride = self._model_cfg["stride"] or max(1, context_length // 2)
-        batch_size = self._data_cfg["batch_size"]
-        num_workers = self._data_cfg["num_workers"]
-        pin_memory = self._data_cfg["pin_memory"]
-        rank = self.runtime.rank
-        world_size = self.runtime.world_size
-        distributed = self.runtime.distributed
-
-        loader_kwargs = {
-            "context_length": context_length,
-            "stride": stride,
-            "batch_size": batch_size,
-            "num_workers": num_workers,
-            "pin_memory": pin_memory,
-        }
-
-        minio_prefix = self._minio_cfg["train_parts_prefix_uri"]
-        minio_uris = self._minio_cfg["train_part_uris"]
-        use_minio = bool(minio_prefix or minio_uris)
-        local_paths = self._discover_local_paths()
-        stream_local = self._data_cfg["stream_local_train_parts"]
-        use_streaming = use_minio or (stream_local and len(local_paths) > 1)
-
-        shuffle_parts = self._data_cfg["shuffle_parts"]
-        shuffle_examples = self._data_cfg["shuffle_examples"]
-        shuffle_buffer_size = self._data_cfg["shuffle_buffer_size"]
-        keep_parts = self._data_cfg["keep_downloaded_train_parts"]
-        cache_dir = self._paths["train_part_cache_dir"]
-        split_seed = int(self._data_cfg.get("split_seed", 42))
-        train_ratio = float(self._data_cfg["train_ratio"])
-
-        if use_minio:
-            train_loader = create_streaming_protein_lm_dataloader(
-                self.tokenizer,
-                prefix_uri=minio_prefix or None,
-                part_uris=minio_uris or None,
-                config=self.minio_data_config,
-                cache_dir=cache_dir,
-                keep_downloaded_parts=keep_parts,
-                shuffle_parts=shuffle_parts,
-                shuffle_examples=shuffle_examples,
-                shuffle_buffer_size=shuffle_buffer_size,
-                seed=rank,
-                distributed=distributed,
-                rank=rank,
-                world_size=world_size,
-                split="train",
-                train_ratio=train_ratio,
-                split_seed=split_seed,
-                **loader_kwargs,
-            )
-            train_eval_loader = (
-                self._build_eval_streaming_loader(loader_kwargs, split="train")
-                if self.is_main_process
-                else None
-            )
-            val_loader = (
-                self._build_eval_streaming_loader(loader_kwargs, split="val")
-                if self.is_main_process
-                else None
-            )
-            return train_loader, train_eval_loader, val_loader
-        elif use_streaming:
-            train_loader = create_streaming_protein_lm_dataloader(
-                self.tokenizer,
-                part_paths=local_paths,
-                shuffle_parts=shuffle_parts,
-                shuffle_examples=shuffle_examples,
-                shuffle_buffer_size=shuffle_buffer_size,
-                seed=rank,
-                distributed=distributed,
-                rank=rank,
-                world_size=world_size,
-                split="train",
-                train_ratio=train_ratio,
-                split_seed=split_seed,
-                **loader_kwargs,
-            )
-            train_eval_loader = (
-                create_streaming_protein_lm_dataloader(
-                    self.tokenizer,
-                    part_paths=local_paths,
-                    shuffle_parts=False,
-                    shuffle_examples=False,
-                    seed=0,
-                    distributed=False,
-                    split="train",
-                    train_ratio=train_ratio,
-                    split_seed=split_seed,
-                    **loader_kwargs,
-                )
-                if self.is_main_process
-                else None
-            )
-            val_loader = (
-                create_streaming_protein_lm_dataloader(
-                    self.tokenizer,
-                    part_paths=local_paths,
-                    shuffle_parts=False,
-                    shuffle_examples=False,
-                    seed=0,
-                    distributed=False,
-                    split="val",
-                    train_ratio=train_ratio,
-                    split_seed=split_seed,
-                    **loader_kwargs,
-                )
-                if self.is_main_process
-                else None
-            )
-            return train_loader, train_eval_loader, val_loader
-        else:
-            corpus_text = load_protein_corpus_text_parts(local_paths) if local_paths else ""
-            if not corpus_text:
-                raise ValueError("No local corpus or MinIO parts configured.")
-            train_text, val_text = split_protein_corpus_text(corpus_text, train_ratio=self._data_cfg["train_ratio"])
-            train_loader = create_protein_lm_dataloader(
-                train_text,
-                self.tokenizer,
-                shuffle=True,
-                sampler_seed=0,
-                distributed=distributed,
-                rank=rank,
-                world_size=world_size,
-                **loader_kwargs,
-            )
-            train_eval_loader = (
-                create_protein_lm_dataloader(train_text, self.tokenizer, shuffle=False, distributed=False, **loader_kwargs)
-                if self.is_main_process
-                else None
-            )
-            val_loader = (
-                create_protein_lm_dataloader(val_text, self.tokenizer, shuffle=False, distributed=False, **loader_kwargs)
-                if val_text and self.is_main_process
-                else None
-            )
-            return train_loader, train_eval_loader, val_loader
-
-    def _build_eval_streaming_loader(self, loader_kwargs: dict, *, split: str | None = None) -> Any:
-        minio_prefix = self._minio_cfg["train_parts_prefix_uri"]
-        minio_uris = self._minio_cfg["train_part_uris"]
-        cache_dir = self._paths["train_part_cache_dir"]
-        keep_parts = self._data_cfg["keep_downloaded_train_parts"]
-        split_seed = int(self._data_cfg.get("split_seed", 42))
-        train_ratio = float(self._data_cfg["train_ratio"])
-        return create_streaming_protein_lm_dataloader(
-            self.tokenizer,
-            prefix_uri=minio_prefix or None,
-            part_uris=minio_uris or None,
-            config=self.minio_data_config,
-            cache_dir=cache_dir,
-            keep_downloaded_parts=keep_parts,
-            shuffle_parts=False,
-            shuffle_examples=False,
-            seed=0,
-            distributed=False,
-            split=split,
-            train_ratio=train_ratio,
-            split_seed=split_seed,
-            **loader_kwargs,
+    def _build_data_loaders(self) -> LoaderBundle:
+        factory = DataLoaderFactory(
+            tokenizer=self.tokenizer,
+            model_config=self.model_config,
+            runtime=self.runtime,
+            paths=self._paths,
+            data_cfg=self._data_cfg,
+            model_cfg=self._model_cfg,
+            minio_cfg=self._minio_cfg,
+            minio_data_config=self.minio_data_config,
+            local_paths_provider=self._discover_local_paths,
+            is_main_process=self.is_main_process,
         )
+        return factory.build()
 
-    def _training_loop(self, train_loader, train_eval_loader, val_loader) -> None:
+    def _training_loop(self, loaders: LoaderBundle) -> None:
+        train_loader = loaders.train_loader
+        train_eval_loader = loaders.train_eval_loader
+        val_loader = loaders.val_loader
         device = self.runtime.device
-        num_epochs = self._training_cfg["num_epochs"]
-        max_steps = self._training_cfg.get("max_steps")
-        eval_freq = self._training_cfg["eval_freq"]
-        eval_batches = self._training_cfg["eval_batches"]
-        grad_clip_norm = self._training_cfg["grad_clip_norm"]
-        save_every_steps = self._training_cfg.get("save_every_steps")
-        save_best = self._training_cfg.get("save_best", True)
-        save_last = self._training_cfg.get("save_last", True)
-        gradient_accumulation_steps = self._training_cfg.get("gradient_accumulation_steps", 1)
-        log_every_steps = max(1, eval_freq // 2) if eval_freq > 0 else 50
-
-        optimizer_list = list(self.optimizer) if isinstance(self.optimizer, (list, tuple)) else [self.optimizer]
-        step_eval_enabled = eval_freq > 0 and not self.runtime.distributed and train_eval_loader is not None
-        if self.is_main_process and self._training_cfg.get("save_best", True) and val_loader is None:
-            raise ValueError(
-                "save_best=true but val_loader is None. "
-                "No fallback to train loss is allowed. "
-                "Configure a validation split with data.train_ratio and data.split_seed."
-            )
+        settings = TrainingLoopSettings.from_config(self._training_cfg)
+        optimizers = optimizer_list(self.optimizer)
+        step_eval_enabled = self._step_eval_enabled(settings, loaders)
+        self._validate_best_checkpoint_settings(settings, loaders)
         start_epoch = self._epoch
 
-        # Mixed precision setup
-        mixed_precision = self._runtime_cfg.get("mixed_precision", "auto")
-        autocast_dtype = self._resolve_autocast_dtype(mixed_precision, device)
-        use_autocast = autocast_dtype is not None and device.type == "cuda"
-        use_grad_scaler = use_autocast and autocast_dtype == torch.float16
-        grad_scaler = torch.amp.GradScaler("cuda") if use_grad_scaler else None
-
-        # Configure linear attention fallback precision
-        import libs.core.mdc.linear_attention as _la_module
-        _la_module.use_fp32_fallback_linear_attention = self._runtime_cfg.get(
-            "use_fp32_fallback_linear_attention", True
+        precision = resolve_precision_context(
+            str(self._runtime_cfg.get("mixed_precision", "auto")),
+            device,
         )
+        self._configure_linear_attention_precision()
 
-        micro_step = 0
+        accumulator = GradientAccumulator(settings.gradient_accumulation_steps)
         _last_loss = float("nan")
 
-        for epoch_offset in range(1, num_epochs + 1):
+        for epoch_offset in range(1, settings.num_epochs + 1):
             epoch = start_epoch + epoch_offset
             self._epoch = epoch
             set_mdc_data_loader_epoch(train_loader, epoch - 1)
             self.model.train()
 
-            max_steps_str = f"/{max_steps}" if max_steps else ""
-            self._log(f"📈 Epoch {epoch}/{start_epoch + num_epochs} | step={self._global_step}{max_steps_str} | tokens={self._tokens_seen:,}")
+            max_steps_str = f"/{settings.max_steps}" if settings.max_steps else ""
+            self._log(f"📈 Epoch {epoch}/{start_epoch + settings.num_epochs} | step={self._global_step}{max_steps_str} | tokens={self._tokens_seen:,}")
 
-            for opt in optimizer_list:
-                opt.zero_grad(set_to_none=True)
+            zero_grad(optimizers)
 
             for batch in train_loader:
                 try:
                     batch = self._move_batch(batch, device)
-                    micro_step += 1
-
-                    # Forward with optional autocast
-                    if use_autocast:
-                        with torch.amp.autocast("cuda", dtype=autocast_dtype):
-                            logits = self.model(batch.input_ids, attn_mask=batch.attention_mask)
-                            loss = compute_mdc_causal_lm_loss(logits, batch.labels)
-                    else:
-                        logits = self.model(batch.input_ids, attn_mask=batch.attention_mask)
-                        loss = compute_mdc_causal_lm_loss(logits, batch.labels)
-
-                    # Scale loss for gradient accumulation
-                    scaled_loss = loss / gradient_accumulation_steps
-
-                    if grad_scaler is not None:
-                        grad_scaler.scale(scaled_loss).backward()
-                    else:
-                        scaled_loss.backward()
+                    accumulator.next_micro_step()
+                    loss = self._forward_loss(batch, precision)
+                    precision.backward(accumulator.scale_loss(loss))
 
                     self._tokens_seen += self._count_step_tokens(batch)
 
                     # Optimizer step at accumulation boundary
-                    if micro_step % gradient_accumulation_steps == 0:
-                        if grad_clip_norm is not None:
-                            if grad_scaler is not None:
-                                for opt in optimizer_list:
-                                    grad_scaler.unscale_(opt)
-                            torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip_norm)
-
-                        if grad_scaler is not None:
-                            for opt in optimizer_list:
-                                grad_scaler.step(opt)
-                            grad_scaler.update()
-                        else:
-                            for opt in optimizer_list:
-                                opt.step()
-
-                        for opt in optimizer_list:
-                            opt.zero_grad(set_to_none=True)
-
+                    if accumulator.at_boundary:
+                        self._optimizer_step(optimizers, precision, settings)
                         self._global_step += 1
                         _last_loss = float(loss.item())
 
-                        if self._global_step % log_every_steps == 0:
+                        if self._global_step % settings.log_every_steps == 0:
                             self._log(
                                 f"  🔄 step={self._global_step} | loss={_last_loss:.4f} | tokens={self._tokens_seen:,}"
                             )
 
-                        if step_eval_enabled and self._global_step % eval_freq == 0:
-                            self._run_eval(train_eval_loader, val_loader, eval_batches, save_best, autocast_dtype=autocast_dtype)
+                        if self._should_run_step_eval(settings, step_eval_enabled=step_eval_enabled):
+                            self._run_eval(
+                                train_eval_loader,
+                                val_loader,
+                                settings.eval_batches,
+                                settings.save_best,
+                                autocast_dtype=precision.autocast_dtype,
+                            )
 
-                        if save_every_steps and self._global_step % save_every_steps == 0:
-                            if self.is_main_process and save_last:
+                        if self._should_save_step_checkpoint(settings):
+                            if self.is_main_process and settings.save_last:
                                 self._log(f"  💾 Saving checkpoint at step {self._global_step}...")
                                 self._save_last_checkpoint()
                                 self._save_resume_state()
 
-                        if max_steps is not None and self._global_step >= max_steps:
+                        if settings.max_steps is not None and self._global_step >= settings.max_steps:
                             break
 
                 except torch.cuda.OutOfMemoryError:
                     self._handle_oom(batch_size=self._data_cfg["batch_size"], context_length=int(self.model_config.context_length))
 
-            # Handle leftover microbatches at end of epoch
-            if micro_step % gradient_accumulation_steps != 0:
-                if grad_clip_norm is not None:
-                    if grad_scaler is not None:
-                        for opt in optimizer_list:
-                            grad_scaler.unscale_(opt)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip_norm)
-                if grad_scaler is not None:
-                    for opt in optimizer_list:
-                        grad_scaler.step(opt)
-                    grad_scaler.update()
-                else:
-                    for opt in optimizer_list:
-                        opt.step()
-                for opt in optimizer_list:
-                    opt.zero_grad(set_to_none=True)
+            # Preserve the existing absolute micro-step cadence across epochs.
+            if accumulator.has_leftover:
+                self._optimizer_step(optimizers, precision, settings)
                 self._global_step += 1
 
             self._distributed_barrier()
 
             if self.is_main_process:
                 self._log(f"  📊 Epoch {epoch} end — evaluating...")
-                self._run_epoch_end_eval(train_eval_loader, val_loader, eval_batches, save_best, autocast_dtype=autocast_dtype)
-                if save_last:
-                    self._log(f"  💾 Saving epoch checkpoint...")
+                self._run_epoch_end_eval(
+                    train_eval_loader,
+                    val_loader,
+                    settings.eval_batches,
+                    settings.save_best,
+                    autocast_dtype=precision.autocast_dtype,
+                )
+                if settings.save_last:
+                    self._log("  💾 Saving epoch checkpoint...")
                     self._save_last_checkpoint()
                 self._save_resume_state()
 
             self._distributed_barrier()
 
-            if max_steps is not None and self._global_step >= max_steps:
-                self._log(f"⏹️  Reached max_steps={max_steps}")
+            if settings.max_steps is not None and self._global_step >= settings.max_steps:
+                self._log(f"⏹️  Reached max_steps={settings.max_steps}")
                 break
 
-        if self.is_main_process and self._training_cfg.get("save_final", True):
+        if self.is_main_process and settings.save_final:
             self._log("💾 Saving final checkpoint...")
             self._save_final_checkpoint()
             self._save_resume_state()
+
+    def _forward_loss(self, batch: CausalLMBatch, precision: PrecisionContext) -> torch.Tensor:
+        with precision.autocast():
+            logits = self.model(batch.input_ids, attn_mask=batch.attention_mask)
+            return compute_mdc_causal_lm_loss(logits, batch.labels)
+
+    def _optimizer_step(
+        self,
+        optimizers: list[torch.optim.Optimizer],
+        precision: PrecisionContext,
+        settings: TrainingLoopSettings,
+    ) -> None:
+        step_optimizers(
+            model=self.model,
+            optimizers=optimizers,
+            precision=precision,
+            grad_clip_norm=settings.grad_clip_norm,
+        )
+
+    def _step_eval_enabled(self, settings: TrainingLoopSettings, loaders: LoaderBundle) -> bool:
+        return settings.eval_freq > 0 and not self.runtime.distributed and loaders.train_eval_loader is not None
+
+    def _should_run_step_eval(
+        self,
+        settings: TrainingLoopSettings,
+        *,
+        step_eval_enabled: bool,
+    ) -> bool:
+        return step_eval_enabled and self._global_step % settings.eval_freq == 0
+
+    def _should_save_step_checkpoint(self, settings: TrainingLoopSettings) -> bool:
+        return (
+            self.is_main_process
+            and settings.save_last
+            and bool(settings.save_every_steps)
+            and self._global_step % settings.save_every_steps == 0
+        )
+
+    def _validate_best_checkpoint_settings(
+        self,
+        settings: TrainingLoopSettings,
+        loaders: LoaderBundle,
+    ) -> None:
+        if self.is_main_process and settings.save_best and loaders.val_loader is None:
+            raise ValueError(
+                "save_best=true but val_loader is None. "
+                "No fallback to train loss is allowed. "
+                "Configure a validation split with data.train_ratio and data.split_seed."
+            )
+
+    def _configure_linear_attention_precision(self) -> None:
+        # Configure linear attention fallback precision.
+        import libs.core.mdc.linear_attention as _la_module
+
+        _la_module.use_fp32_fallback_linear_attention = self._runtime_cfg.get(
+            "use_fp32_fallback_linear_attention", True
+        )
 
     def _resolve_autocast_dtype(self, mixed_precision: str, device: torch.device) -> torch.dtype | None:
         if device.type != "cuda":
@@ -846,7 +807,7 @@ class ProteinPretrainTrainer:
             "2. Reduce context_length to 512 or 384",
             "3. Set eval_batches=1",
             "4. Increase eval_freq to reduce evaluation frequency",
-            "5. Use the 16GB-optimized config: train.16gb.yaml",
+            "5. Use the 16GB-optimized config: config/train.16gb.yaml",
         ]
         peak_str = f"{peak_gb:.2f}" if peak_gb is not None else "unknown"
         msg = (

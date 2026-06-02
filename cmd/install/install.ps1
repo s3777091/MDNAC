@@ -23,8 +23,9 @@ if ($env:VIRTUAL_ENV) {
 $cleanPath = ($env:PATH -split ';') | Where-Object { $_ -notlike '*\.venv\*' }
 $env:PATH = $cleanPath -join ';'
 
-$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-Set-Location $ScriptRoot
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$RepoRoot = (Resolve-Path (Join-Path $ScriptDir '..\..')).Path
+Set-Location $RepoRoot
 
 function Log {
     param([string]$m)
@@ -106,12 +107,12 @@ Log 'Syncing environment from uv.lock'
 if ($LASTEXITCODE -ne 0) { Die 'uv sync failed' }
 
 # --- Resolve venv Python path explicitly ---
-$VenvPython = Join-Path $ScriptRoot '.venv\Scripts\python.exe'
+$VenvPython = Join-Path $RepoRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path $VenvPython)) { Die '.venv\Scripts\python.exe not found after uv sync.' }
 Write-Host ('venv python: ' + $VenvPython)
 
 # Ensure pyvenv.cfg exists (uv 0.11+ may not create it for managed envs)
-$pyvenvCfg = Join-Path $ScriptRoot '.venv\pyvenv.cfg'
+$pyvenvCfg = Join-Path $RepoRoot '.venv\pyvenv.cfg'
 if (-not (Test-Path $pyvenvCfg)) {
     Log 'Creating pyvenv.cfg (missing after uv sync)'
     $pyHome = & $VenvPython -c "import sys, os; print(os.path.dirname(getattr(sys, '_base_executable', sys.executable)))"
@@ -124,7 +125,7 @@ version = $pyVer
 }
 
 # Point uv pip at our project venv
-$env:VIRTUAL_ENV = Join-Path $ScriptRoot '.venv'
+$env:VIRTUAL_ENV = Join-Path $RepoRoot '.venv'
 
 # --- Detect CUDA version for auto mode ---
 function Detect-CudaVariant {

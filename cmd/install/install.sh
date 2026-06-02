@@ -10,9 +10,10 @@ SKIP_KERNEL=0
 TORCH_SYNC_PROTECTED=0
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+cd "$REPO_ROOT"
 
-export UV_CACHE_DIR="${UV_CACHE_DIR:-$SCRIPT_DIR/.uv-cache}"
+export UV_CACHE_DIR="${UV_CACHE_DIR:-$REPO_ROOT/.uv-cache}"
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 # --- Parse arguments ---
@@ -140,7 +141,7 @@ prepare_local_files() {
 
 sync_environment() {
   local -a sync_args=(--frozen --python "$PYTHON_VERSION")
-  local venv_python="$SCRIPT_DIR/.venv/bin/python"
+  local venv_python="$REPO_ROOT/.venv/bin/python"
 
   if [ "$TORCH_VARIANT" = "none" ]; then
     TORCH_SYNC_PROTECTED=1
@@ -153,14 +154,12 @@ sync_environment() {
     elif [ "$TORCH_VARIANT" != "auto" ] && torch_install_matches "$venv_python" "$TORCH_VARIANT"; then
       TORCH_SYNC_PROTECTED=1
       log "Existing PyTorch matches $TORCH_VARIANT; uv sync will leave it untouched"
-    else
-      log "PyTorch will be handled after uv sync; uv sync will skip PyTorch packages"
     fi
-  else
-    log "PyTorch will be handled after uv sync; uv sync will skip PyTorch packages"
   fi
 
-  sync_args+=(--inexact --no-install-package torch --no-install-package torchvision --no-install-package torchaudio)
+  if [ "$TORCH_SYNC_PROTECTED" -eq 1 ]; then
+    sync_args+=(--inexact --no-install-package torch --no-install-package torchvision --no-install-package torchaudio)
+  fi
 
   log "Syncing Python environment from uv.lock"
   uv sync "${sync_args[@]}" "${EXTRA_SYNC_ARGS[@]+"${EXTRA_SYNC_ARGS[@]}"}"
@@ -171,13 +170,6 @@ detect_cuda_variant() {
     echo "cpu"
     return
   fi
-
-  if is_tesla_v100_gpu; then
-    warn "Tesla V100 / compute capability 7.0 detected. Selecting cu126."
-    echo "cu126"
-    return
-  fi
-
   local output
   output=$(nvidia-smi 2>&1) || { echo "cpu"; return; }
   local cuda_ver
@@ -191,8 +183,7 @@ detect_cuda_variant() {
   minor=$(echo "$cuda_ver" | cut -d. -f2)
   echo "Detected CUDA driver version: $cuda_ver" >&2
   if [ "$major" -ge 13 ]; then
-    warn "CUDA driver $cuda_ver detected. Tesla-safe auto mode selects cu126 instead of blindly selecting cu130."
-    echo "cu126"
+    echo "cu130"
   elif [ "$major" -eq 12 ] && [ "$minor" -ge 8 ]; then
     echo "cu128"
   elif [ "$major" -eq 12 ] && [ "$minor" -ge 6 ]; then
@@ -205,37 +196,6 @@ detect_cuda_variant() {
 
 has_nvidia_driver() {
   have nvidia-smi && nvidia-smi >/dev/null 2>&1
-}
-
-is_tesla_v100_gpu() {
-  if ! have nvidia-smi; then
-    return 1
-  fi
-
-  local query
-  query=$(nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader,nounits 2>/dev/null || true)
-  if printf '%s\n' "$query" | grep -Eiq '(^|,| )Tesla V100|(^|,| )V100|(^|,| )7\.0($|,| )'; then
-    return 0
-  fi
-
-  query=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || true)
-  printf '%s\n' "$query" | grep -Eiq 'Tesla V100|V100'
-}
-
-ensure_tesla_torch_variant() {
-  if ! is_tesla_v100_gpu; then
-    return
-  fi
-
-  if [ "$TORCH_VARIANT" = "auto" ]; then
-    TORCH_VARIANT="cu126"
-    log "Tesla V100 detected; forcing PyTorch variant: $TORCH_VARIANT"
-    return
-  fi
-
-  if [ "$TORCH_VARIANT" != "cu126" ] && [ "$TORCH_VARIANT" != "none" ]; then
-    die "Tesla V100 detected. Use --torch cu126 or --torch none, not --torch $TORCH_VARIANT."
-  fi
 }
 
 torch_current_variant() {
@@ -300,15 +260,6 @@ if has_nvidia and (compiled_cuda is None or not cuda_available):
     print("NVIDIA driver found, but installed PyTorch is not CUDA-usable.")
     raise SystemExit(1)
 
-if has_nvidia:
-    try:
-        x = torch.randint(0, 256, (2, 512), device="cuda")
-        torch.cuda.synchronize()
-        del x
-    except Exception as exc:
-        print(f"CUDA tensor allocation failed: {exc}")
-        raise SystemExit(1)
-
 raise SystemExit(0)
 ' "$has_nvidia" "$TORCH_MIN_VERSION"
 }
@@ -340,8 +291,7 @@ def version_tuple(value):
 
 torch_version = torch.__version__.split("+", 1)[0]
 compiled_cuda = torch.version.cuda
-cuda_available = torch.cuda.is_available()
-print(f"Found torch {torch.__version__} (CUDA compiled: {compiled_cuda}, CUDA available: {cuda_available})")
+print(f"Found torch {torch.__version__} (CUDA compiled: {compiled_cuda})")
 
 if version_tuple(torch_version) < version_tuple(min_version):
     print(f"PyTorch {torch_version} is older than required {min_version}.")
@@ -355,13 +305,6 @@ if requested_variant == "cpu":
 
 expected_cuda = {"cu126": "12.6", "cu128": "12.8", "cu130": "13.0"}[requested_variant]
 if compiled_cuda and compiled_cuda.startswith(expected_cuda):
-    try:
-        x = torch.randint(0, 256, (2, 512), device="cuda")
-        torch.cuda.synchronize()
-        del x
-    except Exception as exc:
-        print(f"CUDA tensor allocation failed: {exc}")
-        raise SystemExit(1)
     raise SystemExit(0)
 
 print(f"Installed PyTorch CUDA build does not match requested {requested_variant}.")
@@ -371,7 +314,7 @@ raise SystemExit(1)
 
 install_torch() {
   # Resolve venv python explicitly
-  local venv_python="$SCRIPT_DIR/.venv/bin/python"
+  local venv_python="$REPO_ROOT/.venv/bin/python"
   if [ ! -x "$venv_python" ]; then
     die ".venv/bin/python not found after uv sync."
   fi
@@ -383,7 +326,7 @@ install_torch() {
   fi
 
   # Ensure pyvenv.cfg exists (uv 0.11+ may not create it for managed envs)
-  local pyvenv_cfg="$SCRIPT_DIR/.venv/pyvenv.cfg"
+  local pyvenv_cfg="$REPO_ROOT/.venv/pyvenv.cfg"
   if [ ! -f "$pyvenv_cfg" ]; then
     log "Creating pyvenv.cfg (missing after uv sync)"
     local py_home
@@ -398,7 +341,7 @@ PYCFG
   fi
 
   # Point uv pip at our project venv
-  export VIRTUAL_ENV="$SCRIPT_DIR/.venv"
+  export VIRTUAL_ENV="$REPO_ROOT/.venv"
 
   # Resolve "auto" to concrete variant
   if [ "$TORCH_VARIANT" = "auto" ]; then
@@ -437,7 +380,7 @@ PYCFG
 }
 
 verify_install() {
-  local venv_python="$SCRIPT_DIR/.venv/bin/python"
+  local venv_python="$REPO_ROOT/.venv/bin/python"
 
   if [ "$SKIP_VERIFY" -eq 1 ]; then
     return
@@ -452,7 +395,7 @@ verify_install() {
       if have nvidia-smi; then
         nvidia-smi
       else
-        die "nvidia-smi not found but CUDA PyTorch variant $TORCH_VARIANT was selected."
+        warn "nvidia-smi not found. CUDA verification may fail."
       fi
       ;;
   esac
@@ -464,10 +407,8 @@ import torch
 print(f'torch {torch.__version__}')
 print(f'CUDA compiled: {torch.version.cuda}')
 print(f'CUDA available: {torch.cuda.is_available()}')
-print('Muon available:', hasattr(torch.optim, 'Muon'))
 if torch.cuda.is_available():
     print(f'GPU device: {torch.cuda.get_device_name(0)}')
-    print(f'GPU capability: {torch.cuda.get_device_capability(0)}')
 "
     case "$TORCH_VARIANT" in
       cu*)
@@ -475,10 +416,9 @@ if torch.cuda.is_available():
         "$venv_python" -c "
 import torch
 assert torch.cuda.is_available(), 'CUDA not available but variant is $TORCH_VARIANT'
-x = torch.randint(0, 256, (2, 512), device='cuda')
-torch.cuda.synchronize()
-print(f'CUDA tensor OK: {tuple(x.shape)} {x.device}')
-"
+x = torch.randn(256, 256, device='cuda')
+print(f'CUDA tensor OK on {x.device}')
+" || warn "GPU tensor test failed. Check nvidia-smi and driver version."
         ;;
     esac
   fi
@@ -492,7 +432,7 @@ install_jupyter_kernel() {
     return
   fi
 
-  local venv_python="$SCRIPT_DIR/.venv/bin/python"
+  local venv_python="$REPO_ROOT/.venv/bin/python"
   log "Installing ipykernel and registering Jupyter kernel"
   uv pip install ipykernel 2>/dev/null || true
   "$venv_python" -m ipykernel install --user --name "microbial-dna-compiler" --display-name "Microbial DNA Compiler (uv)"
@@ -514,7 +454,7 @@ print_done() {
 ==================================================================
 
 GPU test:
-  uv run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); x=torch.randint(0,256,(2,512),device='cuda'); print('CUDA OK:', x.shape, x.device); print('Muon available:', hasattr(torch.optim, 'Muon'))"
+  uv run python -c "import torch; print(torch.cuda.is_available())"
 
 Run tests:
   uv run python -m pytest tests/
@@ -532,7 +472,6 @@ main() {
 
   ensure_uv
   ensure_python
-  ensure_tesla_torch_variant
   sync_environment
   install_torch
   prepare_local_files

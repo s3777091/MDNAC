@@ -16,19 +16,19 @@ Current training flow:
 
 ```powershell
 # Auto-detect GPU and install best variant (recommended):
-.\install.ps1 -Recreate
+.\cmd\install\install.ps1 -Recreate
 
 # Explicit CUDA 12.8 (RTX 40xx/50xx, CUDA driver 12.8+):
-.\install.ps1 -Recreate -Torch cu128
+.\cmd\install\install.ps1 -Recreate -Torch cu128
 
 # Explicit CUDA 12.6 (older GPUs, CUDA driver 12.6-12.7):
-.\install.ps1 -Recreate -Torch cu126
+.\cmd\install\install.ps1 -Recreate -Torch cu126
 
 # CPU only (no GPU):
-.\install.ps1 -Recreate -Torch cpu
+.\cmd\install\install.ps1 -Recreate -Torch cpu
 
 # Skip torch entirely:
-.\install.ps1 -Recreate -Torch none
+.\cmd\install\install.ps1 -Recreate -Torch none
 ```
 
 Optional flags: `-SkipVerify`, `-SkipKernel`, `-Python 3.12`.
@@ -37,19 +37,22 @@ Optional flags: `-SkipVerify`, `-SkipKernel`, `-Python 3.12`.
 
 ```bash
 # Auto-detect GPU (recommended):
-bash install.sh --recreate
+bash cmd/install/install.sh --recreate
 
 # Explicit CUDA 12.8:
-bash install.sh --recreate --torch cu128
+bash cmd/install/install.sh --recreate --torch cu128
 
 # Explicit CUDA 12.6:
-bash install.sh --recreate --torch cu126
+bash cmd/install/install.sh --recreate --torch cu126
 
 # CPU only:
-bash install.sh --recreate --torch cpu
+bash cmd/install/install.sh --recreate --torch cpu
+
+# Tesla/V100-safe GPU installer:
+bash cmd/install/install.tesla.sh --recreate
 
 # Skip verification and kernel install:
-bash install.sh --recreate --skip-verify --skip-kernel
+bash cmd/install/install.sh --recreate --skip-verify --skip-kernel
 ```
 
 ### Verify GPU
@@ -61,6 +64,17 @@ uv run python -c "import torch; print(torch.__version__); print(torch.cuda.is_av
 On a working GPU machine this prints `True` for `cuda.is_available()` and shows the CUDA version.
 
 **Important**: `nvidia-smi` must work before CUDA torch can pass GPU verification. If it fails, install or update your NVIDIA driver first.
+
+### Notebook runtime paths
+
+After a normal `git clone`, install, and opening notebooks from inside this repo, you usually do not need to set any path variables. The notebooks auto-detect the repository root and use the default YAML files under `config/`.
+
+Use these environment variables only when the notebook kernel is not started from the repo, or when you intentionally want another config:
+
+- `MDNAC_REPO_DIR`: absolute path to the cloned repo, for example `/content/Microbial-DNA-Compiler` on Colab or `C:\Users\you\Microbial DNA Compiler` on Windows.
+- `MDNAC_TRAIN_CONFIG`: optional override for protein pretrain/eval config. Default: `config/train.16gb.yaml` in the training notebooks.
+- `MDNAC_INSTRUCTION_CONFIG`: optional override for instruction tuning config. Default: `config/instruction.16gb.yaml`.
+- `MDNAC_EVAL_CHECKPOINT`: optional checkpoint override for evaluation notebooks.
 
 ### Which CUDA variant to use
 
@@ -107,7 +121,7 @@ This matches the intended two-stage flow:
 Build or rebuild the local RefSeq artifacts:
 
 ```bash
-uv run python cmd/build_refseq_profile_text.py data/raw/refseq_bacteria_protein -o data/compiled/refseq_bacteria_protein --vocab-size 512 --instruction-min-proteins 10
+uv run python cmd/data/build_refseq_profile_text.py data/raw/refseq_bacteria_protein -o data/compiled/refseq_bacteria_protein --vocab-size 512 --instruction-min-proteins 10
 ```
 
 For larger local RefSeq builds, add `--workers 0` to auto-use all detected CPU cores for the CPU-bound record compilation and `instruction.jsonl` rendering steps.
@@ -115,9 +129,9 @@ For larger local RefSeq builds, add `--workers 0` to auto-use all detected CPU c
 Use `--skip` when you only want to refresh part of the output set:
 
 ```bash
-uv run python cmd/build_refseq_profile_text.py ... --skip tokenizer_map.json
-uv run python cmd/build_refseq_profile_text.py ... --skip train,instruction.jsonl
-uv run python cmd/build_refseq_profile_text.py --rebuild-tokenizer-map-from-train -o data/compiled/refseq_bacteria_protein
+uv run python cmd/data/build_refseq_profile_text.py ... --skip tokenizer_map.json
+uv run python cmd/data/build_refseq_profile_text.py ... --skip train,instruction.jsonl
+uv run python cmd/data/build_refseq_profile_text.py --rebuild-tokenizer-map-from-train -o data/compiled/refseq_bacteria_protein
 ```
 
 `--skip tokenizer_map.json` means do not write `tokenizer_map.json`.
@@ -147,11 +161,15 @@ Legacy notebooks (kept for backward compatibility):
 
 ### Configuration
 
-The unified notebook accepts `train.yaml` via three options:
+Repository YAML files live under `config/`:
 
-1. **Default** — uses `train.yaml` at the repo root.
-2. **Upload** — upload a custom YAML file (supports Colab, ipywidgets, or path input).
-3. **Custom path** — specify an arbitrary filesystem path.
+- `config/train.yaml` — default protein training config for code paths that do not pass `config_path`.
+- `config/train.16gb.yaml` — notebook default for 16GB-style GPU training.
+- `config/train.resume.yaml` — resume config.
+- `config/train.windows.yaml` — Windows-local variant.
+- `config/instruction.16gb.yaml` — stage-3 instruction tuning config.
+
+In notebooks, use the default config after a normal clone, or set `MDNAC_TRAIN_CONFIG` / `MDNAC_INSTRUCTION_CONFIG` to point at another YAML.
 
 ### Training Modes
 
@@ -171,7 +189,7 @@ The unified notebook accepts `train.yaml` via three options:
 
 All training logic lives in `libs.core.pretrain.protein_lm.trainer.ProteinPretrainTrainer`, which reuses existing helpers from `libs.core`.
 
-The pretrain notebook loads shared paths, model settings, optimizer choice (`muon` default), multi-GPU options, and optional MinIO overrides from `train.yaml` at the repo root. Keep sensitive MinIO credentials in `.env` or environment variables and only put non-secret endpoint or bucket overrides in `train.yaml` when needed.
+The pretrain notebook loads shared paths, model settings, optimizer choice (`muon` default), multi-GPU options, and optional MinIO overrides from `config/train.yaml`. Keep sensitive MinIO credentials in `.env` or environment variables and only put non-secret endpoint or bucket overrides in `config/train.yaml` when needed.
 
 The notebooks call `libs.core` helpers to build or load the protein `SequenceTokenizer`, create causal-LM batches from `train.txt`, instantiate ProGen backbone configs for the MDC decoder, save/load resumable `progen_protein_lm` checkpoints, and benchmark protein next-token accuracy.
 
@@ -228,17 +246,17 @@ By default each downloaded part is removed after it has been consumed. Set `keep
 To pretrain on the same metadata-to-protein shape used by `instruction.jsonl`, build profile-aware pretrain artifacts from the JSONL file:
 
 ```powershell
-cmd\build_profile_pretrain_from_instruction_jsonl.cmd data\compiled\refseq_bacteria_protein\instruction.jsonl -o data\compiled\refseq_bacteria_profile_pretrain
+cmd\instruction\build_profile_pretrain_from_instruction_jsonl.cmd data\compiled\refseq_bacteria_protein\instruction.jsonl -o data\compiled\refseq_bacteria_profile_pretrain
 ```
 
 ```bash
-bash cmd/build_profile_pretrain_from_instruction_jsonl.sh data/compiled/refseq_bacteria_protein/instruction.jsonl -o data/compiled/refseq_bacteria_profile_pretrain
+bash cmd/instruction/build_profile_pretrain_from_instruction_jsonl.sh data/compiled/refseq_bacteria_protein/instruction.jsonl -o data/compiled/refseq_bacteria_profile_pretrain
 ```
 
 This writes a profile-aware `train.txt` where each line keeps `instruction` and optional `input` as the conditioning profile, followed by the protein `output` target. If `instruction.jsonl` sits next to the stage-1 protein `tokenizer_map.json`, the command auto-loads that map and preserves protein token IDs for instruction tuning. You can also pass it explicitly:
 
 ```powershell
-cmd\build_profile_pretrain_from_instruction_jsonl.cmd data\compiled\refseq_bacteria_protein\instruction.jsonl -o data\compiled\refseq_bacteria_profile_pretrain --protein-tokenizer-map data\compiled\refseq_bacteria_protein\tokenizer_map.json
+cmd\instruction\build_profile_pretrain_from_instruction_jsonl.cmd data\compiled\refseq_bacteria_protein\instruction.jsonl -o data\compiled\refseq_bacteria_profile_pretrain --protein-tokenizer-map data\compiled\refseq_bacteria_protein\tokenizer_map.json
 ```
 
 Use `--legacy-kmer-tokenizer` only when you intentionally want the older stage-2-only k-mer target tokenizer. That mode runs, but it does not cleanly reuse the stage-1 protein embedding rows.
@@ -246,13 +264,13 @@ Use `--legacy-kmer-tokenizer` only when you intentionally want the older stage-2
 If you need to collapse duplicates introduced by repeated append-only runs, use the dedupe command:
 
 ```powershell
-cmd\dedupe_refseq_profile_text.cmd data\compiled\refseq_bacteria_protein
-cmd\dedupe_refseq_profile_text.cmd data\compiled\refseq_bacteria_protein --dry-run
+cmd\data\dedupe_refseq_profile_text.cmd data\compiled\refseq_bacteria_protein
+cmd\data\dedupe_refseq_profile_text.cmd data\compiled\refseq_bacteria_protein --dry-run
 ```
 
 ```bash
-bash cmd/dedupe_refseq_profile_text.sh data/compiled/refseq_bacteria_protein
-bash cmd/dedupe_refseq_profile_text.sh data/compiled/refseq_bacteria_protein --dry-run
+bash cmd/data/dedupe_refseq_profile_text.sh data/compiled/refseq_bacteria_protein
+bash cmd/data/dedupe_refseq_profile_text.sh data/compiled/refseq_bacteria_protein --dry-run
 ```
 
 The dedupe pass removes duplicate non-empty lines from both `train.txt` and `instruction.jsonl` while preserving the first occurrence. It only touches those two files so the pass stays I/O-bound and fast on large append-only corpora.
@@ -260,13 +278,13 @@ The dedupe pass removes duplicate non-empty lines from both `train.txt` and `ins
 If you already have separate corpus shards and only want to join them, use the concat command:
 
 ```powershell
-cmd\concat_text_files.cmd data\a\instruction.jsonl data\b\instruction.jsonl -o data\instruction.merged.jsonl
-cmd\concat_text_files.cmd data\a\train.txt data\b\train.txt -o data\train.merged.txt --overwrite
+cmd\data\concat_text_files.cmd data\a\instruction.jsonl data\b\instruction.jsonl -o data\instruction.merged.jsonl
+cmd\data\concat_text_files.cmd data\a\train.txt data\b\train.txt -o data\train.merged.txt --overwrite
 ```
 
 ```bash
-bash cmd/concat_text_files.sh data/a/instruction.jsonl data/b/instruction.jsonl -o data/instruction.merged.jsonl
-bash cmd/concat_text_files.sh data/a/train.txt data/b/train.txt -o data/train.merged.txt --overwrite
+bash cmd/data/concat_text_files.sh data/a/instruction.jsonl data/b/instruction.jsonl -o data/instruction.merged.jsonl
+bash cmd/data/concat_text_files.sh data/a/train.txt data/b/train.txt -o data/train.merged.txt --overwrite
 ```
 
 This is a streaming file concatenation pass. It keeps input order, does not parse JSONL, does not validate records, and does not remove duplicate lines. By default it inserts one separator newline only when a file boundary would otherwise glue two records together. Add `--raw` for exact byte concatenation.
@@ -274,13 +292,13 @@ This is a streaming file concatenation pass. It keeps input order, does not pars
 If `instruction.jsonl` is too large to train on directly, downsample it with a streaming two-pass sampler that preserves coverage across `dataset_group x product` buckets while compressing extremely repeated proteins:
 
 ```powershell
-cmd\downsample_instruction_jsonl.cmd data\instruction.jsonl -o data\instruction.50pct.jsonl --keep-ratio 0.5 --alpha 0.8
-cmd\downsample_instruction_jsonl.cmd data\instruction.jsonl --dry-run --keep-ratio 0.5
+cmd\instruction\downsample_instruction_jsonl.cmd data\instruction.jsonl -o data\instruction.50pct.jsonl --keep-ratio 0.5 --alpha 0.8
+cmd\instruction\downsample_instruction_jsonl.cmd data\instruction.jsonl --dry-run --keep-ratio 0.5
 ```
 
 ```bash
-bash cmd/downsample_instruction_jsonl.sh data/instruction.jsonl -o data/instruction.50pct.jsonl --keep-ratio 0.5 --alpha 0.8
-bash cmd/downsample_instruction_jsonl.sh data/instruction.jsonl --dry-run --keep-ratio 0.5
+bash cmd/instruction/downsample_instruction_jsonl.sh data/instruction.jsonl -o data/instruction.50pct.jsonl --keep-ratio 0.5 --alpha 0.8
+bash cmd/instruction/downsample_instruction_jsonl.sh data/instruction.jsonl --dry-run --keep-ratio 0.5
 ```
 
 Unlike chopping the file head/tail, this keeps at least one example per protein bucket, preserves dataset-group balance, and spreads selected records across each bucket with deterministic systematic sampling.
@@ -338,7 +356,7 @@ ranked = rank_candidates(validated)
 If the output folder name matches a direct child folder under the input root, the build automatically scopes to that child folder. For example:
 
 ```bash
-uv run python cmd/build_refseq_profile_text.py data/raw/refseq_bacteria_protein -o data/compiled/refseq_bacteria_protein/fungi
+uv run python cmd/data/build_refseq_profile_text.py data/raw/refseq_bacteria_protein -o data/compiled/refseq_bacteria_protein/fungi
 ```
 
 This will only compile files under `data/raw/refseq_bacteria_protein/fungi` and append that subset into `data/compiled/refseq_bacteria_protein/fungi`.
@@ -468,7 +486,7 @@ For this project, the BPE vocabulary is specialized for sequence training instea
 ## Project layout
 
 ```text
-cmd/                  maintained command-line data entrypoints
+cmd/                  command entrypoints grouped by data/, instruction/, install/
 libs/
   core/               MDC model, fusion, pretrain compiler
   data/
@@ -580,13 +598,13 @@ uv run python -m unittest discover -s tests -p "test_*.py"
 If you are setting up this repo on an Ubuntu or Linux server, use the bundled install script:
 
 ```bash
-bash install.sh
+bash cmd/install/install.sh
 ```
 
-The Linux equivalent of `cmd/build_refseq_profile_text.cmd` is:
+The Linux equivalent of `cmd\data\build_refseq_profile_text.cmd` is:
 
 ```bash
-bash cmd/build_refseq_profile_text.sh data/raw/refseq_bacteria_protein -o data/compiled/refseq_bacteria_protein/fungi/package_1 --vocab-size 256 --instruction-min-proteins 5 --workers 8
+bash cmd/data/build_refseq_profile_text.sh data/raw/refseq_bacteria_protein -o data/compiled/refseq_bacteria_protein/fungi/package_1 --vocab-size 256 --instruction-min-proteins 5 --workers 8
 ```
 
 No notebook dependencies are installed by default.

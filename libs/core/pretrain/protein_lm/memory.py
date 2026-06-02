@@ -700,7 +700,7 @@ def run_preflight_vram_check(
             "2. Reduce context_length to 512 or 384",
             "3. Set eval_batches=1",
             "4. Increase eval_freq to reduce eval frequency",
-            "5. Use the 16GB-optimized config: train.16gb.yaml",
+            "5. Use the 16GB-optimized config: config/train.16gb.yaml",
         ]
         msg = (
             f"\n{'='*60}\n"
