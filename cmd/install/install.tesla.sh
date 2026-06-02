@@ -127,8 +127,11 @@ prepare_local_files() {
     data/raw/refseq_bacteria_protein \
     data/compiled/refseq_bacteria_protein \
     data/compiled/refseq_bacteria_profile_pretrain \
+    data/compiled/refseq_bacteria_instruction_profile \
     data/cache/protein_train_parts \
+    data/cache/instruction_train_parts \
     data/checkpoints/protein_from_scratch \
+    data/checkpoints/protein_instruction \
     libs/data/models/catalog \
     libs/data/models/datasets \
     libs/data/models/trash \

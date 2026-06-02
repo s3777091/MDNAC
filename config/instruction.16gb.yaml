@@ -1,7 +1,7 @@
 paths:
-  instruction_jsonl_path: temp/instruction.slim.jsonl
-  instruction_part_dir: temp
-  artifact_source_jsonl: temp/instruction.slim.jsonl
+  instruction_jsonl_path: data/compiled/refseq_bacteria_protein/instruction.jsonl
+  instruction_part_dir: data/cache/instruction_train_parts
+  artifact_source_jsonl: data/compiled/refseq_bacteria_protein/instruction.jsonl
   base_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
   checkpoint_dir: data/checkpoints/protein_instruction
   artifact_dir: data/compiled/refseq_bacteria_instruction_profile

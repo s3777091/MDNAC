@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import nullcontext
+import fnmatch
 import json
 import math
 from dataclasses import dataclass, field
@@ -357,7 +358,10 @@ class DataLoaderFactory:
         return bool(self._minio_cfg["train_parts_prefix_uri"] or self._minio_cfg["train_part_uris"])
 
     def _use_local_streaming(self, local_paths: tuple[Path, ...]) -> bool:
-        return bool(self._data_cfg["stream_local_train_parts"] and len(local_paths) > 1)
+        if not self._data_cfg["stream_local_train_parts"]:
+            return False
+        part_glob = str(self._data_cfg.get("train_part_glob") or "train_part_*.txt")
+        return any(fnmatch.fnmatch(path.name, part_glob) for path in local_paths)
 
     def _eval_streaming_loader(
         self,

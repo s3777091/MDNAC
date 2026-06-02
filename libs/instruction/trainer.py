@@ -308,7 +308,7 @@ def _resolve_optional_project_path(value: Any, *, project_root: Path) -> Path | 
 
 
 def _sample_instruction_records_for_artifacts(
-    path: Path,
+    paths: Path | Sequence[Path],
     *,
     default_sequence_type: str,
     instruction_field: str,
@@ -321,7 +321,7 @@ def _sample_instruction_records_for_artifacts(
     records = []
     for index, record in enumerate(
         iter_instruction_records(
-            path,
+            paths,
             default_sequence_type=default_sequence_type,
             instruction_field=instruction_field,
             input_field=input_field,
@@ -332,7 +332,7 @@ def _sample_instruction_records_for_artifacts(
             break
         records.append(record)
     if not records:
-        raise ValueError(f"Instruction JSONL does not contain any valid records: {path}")
+        raise ValueError(f"Instruction JSONL does not contain any valid records: {paths}")
     return tuple(records)
 
 
@@ -511,20 +511,20 @@ class InstructionTrainer:
             if self.config.artifact_source_jsonl is not None
             else None
         )
-        if artifact_source_jsonl is None:
-            if len(self.instruction_paths) != 1:
-                raise ValueError(
-                    "Building tokenizer artifacts from multiple JSONL files needs paths.artifact_source_jsonl. "
-                    "Use the merged instruction.jsonl for artifacts and stream instruction_part_*.jsonl for training."
-                )
-            artifact_source_jsonl = self.instruction_paths[0]
-        if not artifact_source_jsonl.is_file():
-            raise ValueError(
-                f"Artifact source instruction JSONL not found: {artifact_source_jsonl}"
-            )
+        artifact_record_paths: Path | Sequence[Path]
+        adjacent_tokenizer_map_base: Path | None = None
+        if artifact_source_jsonl is not None and artifact_source_jsonl.is_file():
+            artifact_record_paths = artifact_source_jsonl
+            adjacent_tokenizer_map_base = artifact_source_jsonl
+        elif self.instruction_paths:
+            artifact_record_paths = self.instruction_paths
+            if artifact_source_jsonl is not None and len(self.instruction_paths) == 1:
+                adjacent_tokenizer_map_base = self.instruction_paths[0]
+        else:
+            raise ValueError("At least one instruction JSONL path is required to build tokenizer artifacts.")
 
         records = _sample_instruction_records_for_artifacts(
-            artifact_source_jsonl,
+            artifact_record_paths,
             default_sequence_type=self.config.default_sequence_type,
             instruction_field=self.config.instruction_field,
             input_field=self.config.input_field,
@@ -540,9 +540,10 @@ class InstructionTrainer:
 
         sequence_tokenizer_map_path = self.config.sequence_tokenizer_map_path
         if sequence_tokenizer_map_path is None and self.config.auto_detect_sequence_tokenizer_map:
-            adjacent_tokenizer_map_path = artifact_source_jsonl.with_name("tokenizer_map.json")
-            if adjacent_tokenizer_map_path.exists():
-                sequence_tokenizer_map_path = adjacent_tokenizer_map_path
+            if adjacent_tokenizer_map_base is not None:
+                adjacent_tokenizer_map_path = adjacent_tokenizer_map_base.with_name("tokenizer_map.json")
+                if adjacent_tokenizer_map_path.exists():
+                    sequence_tokenizer_map_path = adjacent_tokenizer_map_path
 
         save_mdc_profile_sequence_pretrain_artifacts(
             records,

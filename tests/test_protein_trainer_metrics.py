@@ -6,7 +6,7 @@ import shutil
 import unittest
 from pathlib import Path
 
-from libs.core.pretrain.protein_lm.services import MetricsWriter
+from libs.core.pretrain.protein_lm.services import DataLoaderFactory, MetricsWriter
 from libs.core.pretrain.protein_lm.trainer import (
     ProteinPretrainTrainer,
     _format_eval_loss,
@@ -97,6 +97,16 @@ class ProteinTrainerMetricTests(unittest.TestCase):
             ],
             list(local_paths),
         )
+
+    def test_streams_single_local_part_but_not_plain_train_text(self) -> None:
+        factory = DataLoaderFactory.__new__(DataLoaderFactory)
+        factory._data_cfg = {
+            "stream_local_train_parts": True,
+            "train_part_glob": "train_part_*.txt",
+        }
+
+        self.assertTrue(factory._use_local_streaming((Path("train_part_1.txt"),)))
+        self.assertFalse(factory._use_local_streaming((Path("train.txt"),)))
 
 
 if __name__ == "__main__":

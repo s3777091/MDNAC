@@ -27,7 +27,6 @@ from libs.core.pretrain.training_config import (
     load_protein_training_config,
 )
 from libs.core.pretrain.protein_lm.core import (
-    build_or_load_protein_tokenizer,
     build_or_load_protein_tokenizer_from_text_paths,
     discover_protein_train_text_paths,
     load_protein_pretrain_checkpoint,
@@ -388,16 +387,9 @@ class ProteinPretrainTrainer:
         rebuild = self._model_cfg["rebuild_tokenizer"]
 
         local_train_paths = self._discover_local_paths()
-        if local_train_paths and len(local_train_paths) > 1:
+        if local_train_paths:
             artifact = build_or_load_protein_tokenizer_from_text_paths(
                 local_train_paths,
-                tokenizer_map_path=tokenizer_map_path,
-                vocab_size=vocab_size,
-                rebuild=rebuild,
-            )
-        elif train_text_path.exists():
-            artifact = build_or_load_protein_tokenizer(
-                train_text_path,
                 tokenizer_map_path=tokenizer_map_path,
                 vocab_size=vocab_size,
                 rebuild=rebuild,
