@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import sys
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -44,8 +45,12 @@ from libs.core.pretrain.training_config import (
     create_protein_training_optimizer,
     describe_protein_training_optimizers,
 )
+from libs.data.training.profile_tokenizer import DEFAULT_PROFILE_BASE_CHARSET
 
-from .data import create_instruction_dataloader, count_instruction_split_records
+from .data import (
+    count_instruction_split_records_by_split,
+    create_instruction_dataloader,
+)
 from .schema import audit_instruction_jsonl, iter_instruction_records, resolve_instruction_paths
 
 
@@ -67,10 +72,14 @@ class InstructionTrainingConfig:
     instruction_field: str = "instruction"
     input_field: str = "input"
     output_field: str = "output"
+    audit_before_training: bool = True
+    reuse_existing_audit: bool = False
     profile_vocab_size: int = 256
     kmer_size: int = 3
     train_ratio: float = 0.95
     split_seed: int = 42
+    count_splits_before_training: bool | str = "auto"
+    count_progress_every: int | None = 250_000
     batch_size: int = 2
     num_workers: int = 0
     pin_memory: bool = True
@@ -82,6 +91,7 @@ class InstructionTrainingConfig:
     gradient_accumulation_steps: int = 8
     eval_freq: int = 100
     eval_batches: int = 16
+    log_every_steps: int | None = None
     save_every_steps: int | None = 100
     save_last: bool = True
     save_best: bool = True
@@ -195,6 +205,11 @@ def build_instruction_training_config(
         ("artifacts", "rebuild_artifacts"),
         ("artifacts", "rebuild"),
     )
+    count_splits_before_training_value = _config_value(
+        config_mapping,
+        ("data", "count_splits_before_training"),
+        ("training", "count_splits_before_training"),
+    )
     return InstructionTrainingConfig(
         instruction_jsonl=instruction_paths,
         base_checkpoint_path=base_checkpoint_path,
@@ -216,10 +231,25 @@ def build_instruction_training_config(
         instruction_field=str(_config_value(config_mapping, ("schema", "instruction_field")) or "instruction"),
         input_field=str(_config_value(config_mapping, ("schema", "input_field")) or "input"),
         output_field=str(_config_value(config_mapping, ("schema", "output_field")) or "output"),
+        audit_before_training=_bool_value(
+            _config_value(config_mapping, ("data", "audit_before_training"), ("training", "audit_before_training")),
+            True,
+        ),
+        reuse_existing_audit=_bool_value(
+            _config_value(config_mapping, ("data", "reuse_existing_audit"), ("training", "reuse_existing_audit")),
+            False,
+        ),
         profile_vocab_size=int(_config_value(config_mapping, ("artifacts", "profile_vocab_size")) or 256),
         kmer_size=int(_config_value(config_mapping, ("artifacts", "kmer_size")) or 3),
         train_ratio=float(_config_value(config_mapping, ("data", "train_ratio")) or 0.95),
         split_seed=int(_config_value(config_mapping, ("data", "split_seed")) or 42),
+        count_splits_before_training=(
+            "auto" if count_splits_before_training_value is None else count_splits_before_training_value
+        ),
+        count_progress_every=_optional_int(
+            _config_value(config_mapping, ("data", "count_progress_every"), ("training", "count_progress_every")),
+            default=250_000,
+        ),
         batch_size=int(_config_value(config_mapping, ("data", "batch_size")) or 2),
         num_workers=int(_config_value(config_mapping, ("data", "num_workers")) or 0),
         pin_memory=_resolve_auto_bool(
@@ -242,6 +272,7 @@ def build_instruction_training_config(
         ),
         eval_freq=int(_config_value(config_mapping, ("training", "eval_freq")) or 100),
         eval_batches=int(_config_value(config_mapping, ("training", "eval_batches")) or 16),
+        log_every_steps=_optional_int(_config_value(config_mapping, ("training", "log_every_steps"))),
         save_every_steps=_optional_int(
             _config_value(config_mapping, ("training", "save_every_steps")),
             default=100,
@@ -407,7 +438,8 @@ class InstructionTrainer:
 
     @property
     def is_main_process(self) -> bool:
-        return self.runtime is None or self.runtime.is_main_process
+        runtime = getattr(self, "runtime", None)
+        return runtime is None or runtime.is_main_process
 
     def train(self) -> InstructionTrainingResult:
         self._validate_config()
@@ -415,59 +447,102 @@ class InstructionTrainer:
         random.seed(self.config.seed)
         torch.manual_seed(self.config.seed)
 
-        self._log("Preparing profile-aware instruction artifacts...")
-        self.artifacts = self._load_or_build_artifacts()
-        self._log(f"Artifact vocab_size={self.artifacts.layout.vocab_size}")
+        self._log("🚀 Starting profile-to-protein instruction training")
+        self._log(f"🧾 Instruction JSONL files: {len(self.instruction_paths)}")
+        for index, path in enumerate(self.instruction_paths, start=1):
+            self._log(f"   📄 [{index}/{len(self.instruction_paths)}] {path}")
+        self._log(f"📥 Base checkpoint: {self.base_checkpoint_path}")
+        self._log(f"📁 Output dir: {self.output_dir}")
+        self._log(f"🧬 Artifact dir: {self.artifact_dir}")
+        self._log(
+            "⚙️  Training config: "
+            f"epochs={self.config.num_epochs} | batch_size={self.config.batch_size} | "
+            f"grad_accum={self.config.gradient_accumulation_steps} | eval_freq={self.config.eval_freq} | "
+            f"eval_batches={self.config.eval_batches} | max_steps={self.config.max_steps}"
+        )
 
-        self._log("Building model from base checkpoint...")
+        self._log("📦 [1/7] Preparing profile-aware instruction artifacts...")
+        self.artifacts = self._load_or_build_artifacts()
+        self._log(
+            "✅ Artifacts ready | "
+            f"vocab_size={self.artifacts.layout.vocab_size} | "
+            f"records={self.artifacts.record_count:,} | sequence_type={self.artifacts.sequence_type}"
+        )
+
+        self._log("🧠 [2/7] Building model from base checkpoint...")
         self._setup_model()
+        param_count = sum(p.numel() for p in unwrap_mdc_training_model(self.model).parameters())
+        self._log(
+            f"✅ Model ready | params={param_count:,} | context_length={self.model_config.context_length} | "
+            f"vocab_size={self.model_config.vocab_size}"
+        )
+
+        self._log("⚙️  [3/7] Preparing runtime...")
         self._setup_runtime()
+        self._log("🔧 [4/7] Creating optimizer...")
         self._setup_optimizer()
         self._maybe_restore_resume_state()
 
-        audit = audit_instruction_jsonl(
-            self.instruction_paths,
-            default_sequence_type=self.config.default_sequence_type,
-            instruction_field=self.config.instruction_field,
-            input_field=self.config.input_field,
-            output_field=self.config.output_field,
-        )
-        if self.is_main_process:
-            _write_json(self.output_dir / "instruction_audit.json", audit.to_dict())
-            self._save_config_snapshot()
+        audit_path = self.output_dir / "instruction_audit.json"
+        if self.config.reuse_existing_audit and audit_path.exists():
+            self._log(f"🔎 [5/7] Reusing existing instruction audit: {audit_path}")
+            if self.is_main_process:
+                self._save_config_snapshot()
+        elif self.config.audit_before_training:
+            self._log("🔎 [5/7] Auditing instruction JSONL...")
+            audit = audit_instruction_jsonl(
+                self.instruction_paths,
+                default_sequence_type=self.config.default_sequence_type,
+                instruction_field=self.config.instruction_field,
+                input_field=self.config.input_field,
+                output_field=self.config.output_field,
+            )
+            if self.is_main_process:
+                _write_json(audit_path, audit.to_dict())
+                self._log(f"📝 Instruction audit written: {audit_path}")
+                self._save_config_snapshot()
+        else:
+            self._log("🔎 [5/7] Instruction audit skipped by config.")
+            if self.is_main_process:
+                self._save_config_snapshot()
 
-        train_count = count_instruction_split_records(
-            self.instruction_paths,
-            split="train",
-            train_ratio=self.config.train_ratio,
-            split_seed=self.config.split_seed,
-            artifacts=self.artifacts,
-            default_sequence_type=self.config.default_sequence_type,
-            instruction_field=self.config.instruction_field,
-            input_field=self.config.input_field,
-            output_field=self.config.output_field,
-            max_sequence_length=int(self.model_config.context_length),
-        )
-        val_count = count_instruction_split_records(
-            self.instruction_paths,
-            split="val",
-            train_ratio=self.config.train_ratio,
-            split_seed=self.config.split_seed,
-            artifacts=self.artifacts,
-            default_sequence_type=self.config.default_sequence_type,
-            instruction_field=self.config.instruction_field,
-            input_field=self.config.input_field,
-            output_field=self.config.output_field,
-            max_sequence_length=int(self.model_config.context_length),
-        )
-        self._log(f"Instruction rows: train={train_count:,} val={val_count:,}")
+        train_count: int | None = None
+        per_epoch_step_limit: int | None = None
+        if self._should_count_splits_before_training():
+            self._log("📊 [6/7] Counting train/validation rows in one pass...")
+            counts = count_instruction_split_records_by_split(
+                self.instruction_paths,
+                train_ratio=self.config.train_ratio,
+                split_seed=self.config.split_seed,
+                artifacts=self.artifacts,
+                default_sequence_type=self.config.default_sequence_type,
+                instruction_field=self.config.instruction_field,
+                input_field=self.config.input_field,
+                output_field=self.config.output_field,
+                max_sequence_length=int(self.model_config.context_length),
+                progress_every=self.config.count_progress_every,
+                progress_callback=self._log_split_count_progress,
+            )
+            train_count = counts["train"]
+            self._log(
+                "✅ Instruction rows counted | "
+                f"train={train_count:,} | val={counts['val']:,} | "
+                f"skipped_long={counts['skipped_for_length']:,} | train_ratio={self.config.train_ratio:.3f}"
+            )
+            per_epoch_step_limit = self._per_epoch_step_limit(train_count)
+            if per_epoch_step_limit is not None:
+                self._log(f"🔢 Distributed per-epoch optimizer step limit: {per_epoch_step_limit:,}")
+        else:
+            self._log("📊 [6/7] Streaming train/validation rows directly; pre-count skipped.")
 
+        self._log("📂 Building train loader...")
         train_loader = self._build_loader("train", drop_last=self.runtime.distributed)
+        self._log("📂 Building validation loader...")
         val_loader = self._build_loader("val", drop_last=False)
-        per_epoch_step_limit = self._per_epoch_step_limit(train_count)
         started_at = time.time()
 
         try:
+            self._log("🏋️ [7/7] Starting instruction training loop...")
             self._training_loop(train_loader, val_loader, per_epoch_step_limit=per_epoch_step_limit)
         finally:
             if self.runtime is not None and self.runtime.distributed:
@@ -476,10 +551,13 @@ class InstructionTrainer:
         elapsed_minutes = (time.time() - started_at) / 60.0
         if self.is_main_process:
             if self.config.save_final:
+                self._log(f"💾 Saving final checkpoint: {self.checkpoint_final_path}")
                 self._save_checkpoint(self.checkpoint_final_path)
             self._save_loss_plot()
             summary = self._build_summary(elapsed_minutes=elapsed_minutes)
             _write_json(self.training_summary_path, summary)
+            self._log(f"📝 Training summary written: {self.training_summary_path}")
+            self._log(f"🎉 Instruction training complete in {elapsed_minutes:.2f} min")
 
         return self._build_result()
 
@@ -504,7 +582,15 @@ class InstructionTrainer:
     def _load_or_build_artifacts(self) -> MDCProfileSequencePretrainArtifacts:
         tokenizer_map_path = self.artifact_dir / "tokenizer_map.json"
         if tokenizer_map_path.exists() and not self.config.rebuild_artifacts:
-            return MDCProfileSequencePretrainArtifacts.from_tokenizer_map_file(tokenizer_map_path)
+            artifacts = MDCProfileSequencePretrainArtifacts.from_tokenizer_map_file(tokenizer_map_path)
+            missing_profile_chars = _missing_profile_base_charset(artifacts)
+            if not missing_profile_chars:
+                self._log(f"   ✅ Reusing tokenizer map: {tokenizer_map_path}")
+                return artifacts
+            self._log(
+                "   Rebuilding tokenizer map because profile tokenizer is missing "
+                f"instruction-safe characters: {_format_missing_profile_chars(missing_profile_chars)}"
+            )
 
         artifact_source_jsonl = (
             Path(self.config.artifact_source_jsonl).expanduser().resolve()
@@ -523,6 +609,8 @@ class InstructionTrainer:
         else:
             raise ValueError("At least one instruction JSONL path is required to build tokenizer artifacts.")
 
+        self._log(f"   🧾 Artifact source: {_format_paths_for_log(artifact_record_paths)}")
+        self._log(f"   🔬 Sampling up to {self.config.artifact_profile_sample_size:,} records for artifacts...")
         records = _sample_instruction_records_for_artifacts(
             artifact_record_paths,
             default_sequence_type=self.config.default_sequence_type,
@@ -545,6 +633,13 @@ class InstructionTrainer:
                 if adjacent_tokenizer_map_path.exists():
                     sequence_tokenizer_map_path = adjacent_tokenizer_map_path
 
+        if sequence_tokenizer_map_path is not None:
+            self._log(f"   🧬 Sequence tokenizer map: {sequence_tokenizer_map_path}")
+        self._log(
+            "   🛠️  Building artifacts | "
+            f"records={len(records):,} | sequence_type={next(iter(sequence_types))} | "
+            f"profile_vocab_size={self.config.profile_vocab_size} | kmer_size={self.config.kmer_size}"
+        )
         save_mdc_profile_sequence_pretrain_artifacts(
             records,
             self.artifact_dir,
@@ -556,17 +651,20 @@ class InstructionTrainer:
         return MDCProfileSequencePretrainArtifacts.from_tokenizer_map_file(tokenizer_map_path)
 
     def _setup_model(self) -> None:
+        self._log(f"   📥 Loading checkpoint payload: {self.base_checkpoint_path}")
         self.base_checkpoint = torch.load(self.base_checkpoint_path, map_location="cpu")
         base_config = _load_mdc_model_config(self.base_checkpoint)
         self.model_config = base_config.with_vocab_size(self.artifacts.layout.vocab_size)
         app = MicrobialDecoderCoreApp(self.model_config, self.artifacts.layout)
 
         if self._is_instruction_checkpoint(self.base_checkpoint):
+            self._log("   🔁 Base checkpoint is already an instruction checkpoint; restoring full app state.")
             app.load_state_dict(
                 _normalize_app_state_dict(self.base_checkpoint["model_state_dict"]),
                 strict=True,
             )
         else:
+            self._log("   🧩 Loading protein backbone for instruction tuning.")
             load_protein_pretrain_checkpoint_for_profile_tuning(
                 self.base_checkpoint_path,
                 model=app.model,
@@ -587,8 +685,8 @@ class InstructionTrainer:
         )
         self.model = self.runtime.model
         self._log(
-            f"Runtime device={self.runtime.device} distributed={self.runtime.distributed} "
-            f"data_parallel={self.runtime.data_parallel}"
+            f"✅ Runtime ready | device={self.runtime.device} | distributed={self.runtime.distributed} "
+            f"| data_parallel={self.runtime.data_parallel} | rank={self.runtime.rank}/{self.runtime.world_size}"
         )
 
     def _setup_optimizer(self) -> None:
@@ -605,11 +703,16 @@ class InstructionTrainer:
             device=self.runtime.device,
         )
         if self.is_main_process:
-            self._log(f"Optimizers: {describe_protein_training_optimizers(self.optimizer)}")
+            self._log(f"✅ Optimizer ready | {describe_protein_training_optimizers(self.optimizer)}")
 
     def _maybe_restore_resume_state(self) -> None:
-        if not self.config.resume_if_available or not self.checkpoint_last_path.exists():
+        if not self.config.resume_if_available:
+            self._log("⏭️  Resume disabled; starting from base checkpoint.")
             return
+        if not self.checkpoint_last_path.exists():
+            self._log(f"🆕 No instruction resume checkpoint found: {self.checkpoint_last_path}")
+            return
+        self._log(f"📥 Loading instruction resume checkpoint: {self.checkpoint_last_path}")
         checkpoint = torch.load(self.checkpoint_last_path, map_location=self.runtime.device)
         if not self._is_instruction_checkpoint(checkpoint):
             raise ValueError(f"Resume checkpoint is not an instruction checkpoint: {self.checkpoint_last_path}")
@@ -632,8 +735,8 @@ class InstructionTrainer:
             self._best_val_loss = float(best_val_loss)
         self._loaded_from_resume = True
         self._log(
-            f"Resumed instruction training: epoch={self._epoch} "
-            f"step={self._global_step} tokens={self._tokens_seen:,}"
+            f"✅ Resumed instruction training | epoch={self._epoch} "
+            f"| step={self._global_step} | tokens={self._tokens_seen:,}"
         )
 
     def _build_loader(self, split: str, *, drop_last: bool):
@@ -674,6 +777,42 @@ class InstructionTrainer:
             )
         return steps
 
+    def _should_count_splits_before_training(self) -> bool:
+        value = self.config.count_splits_before_training
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized == "auto":
+                should_count = bool(self.runtime.distributed)
+            elif normalized in {"1", "true", "yes", "on"}:
+                should_count = True
+            elif normalized in {"0", "false", "no", "off"}:
+                should_count = False
+            else:
+                raise ValueError(
+                    "count_splits_before_training must be true, false, or 'auto'."
+                )
+        else:
+            should_count = bool(value)
+        if self.runtime.distributed and not should_count:
+            raise ValueError(
+                "Distributed instruction training requires count_splits_before_training=true or 'auto' "
+                "so all ranks stop at the same per-epoch step."
+            )
+        return should_count
+
+    def _log_split_count_progress(
+        self,
+        rows_seen: int,
+        train_count: int,
+        val_count: int,
+        skipped_for_length: int,
+    ) -> None:
+        self._log(
+            "   📊 Count progress | "
+            f"rows={rows_seen:,} | train={train_count:,} | val={val_count:,} | "
+            f"skipped_long={skipped_for_length:,}"
+        )
+
     def _training_loop(self, train_loader, val_loader, *, per_epoch_step_limit: int | None) -> None:
         amp_dtype = self._resolve_autocast_dtype()
         use_autocast = amp_dtype is not None and self.runtime.device.type == "cuda"
@@ -682,6 +821,7 @@ class InstructionTrainer:
         optimizers = _optimizer_list(self.optimizer)
         micro_step = 0
         start_epoch = self._epoch
+        log_every_steps = self._log_every_steps()
 
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
@@ -691,7 +831,11 @@ class InstructionTrainer:
             self._epoch = epoch
             set_mdc_data_loader_epoch(train_loader, epoch - 1)
             unwrap_mdc_training_model(self.model).train()
-            self._log(f"Epoch {epoch}/{start_epoch + self.config.num_epochs} step={self._global_step}")
+            max_steps_str = f"/{self.config.max_steps}" if self.config.max_steps else ""
+            self._log(
+                f"📈 Epoch {epoch}/{start_epoch + self.config.num_epochs} | "
+                f"step={self._global_step}{max_steps_str} | tokens={self._tokens_seen:,}"
+            )
 
             local_batches = 0
             for batch in train_loader:
@@ -732,8 +876,12 @@ class InstructionTrainer:
                         opt.zero_grad(set_to_none=True)
 
                     self._global_step += 1
-                    if self.is_main_process and self._global_step % max(1, self.config.eval_freq // 2) == 0:
-                        self._log(f"  step={self._global_step} loss={float(loss.item()):.4f} tokens={self._tokens_seen:,}")
+                    if self.is_main_process and self._global_step % log_every_steps == 0:
+                        lr_text = _format_optimizer_lrs(optimizers)
+                        self._log(
+                            f"  🔄 step={self._global_step} | epoch={epoch} | micro_step={micro_step} | "
+                            f"loss={float(loss.item()):.4f} | tokens={self._tokens_seen:,} | lr={lr_text}"
+                        )
 
                     if self.config.eval_freq > 0 and self._global_step % self.config.eval_freq == 0:
                         self._run_eval(val_loader, train_loader=train_loader)
@@ -744,6 +892,7 @@ class InstructionTrainer:
                         and self.config.save_every_steps
                         and self._global_step % self.config.save_every_steps == 0
                     ):
+                        self._log(f"  💾 Saving checkpoint at step {self._global_step}: {self.checkpoint_last_path}")
                         self._save_checkpoint(self.checkpoint_last_path)
 
                     if self.config.max_steps is not None and self._global_step >= self.config.max_steps:
@@ -765,17 +914,31 @@ class InstructionTrainer:
                 for opt in optimizers:
                     opt.zero_grad(set_to_none=True)
                 self._global_step += 1
+                if self.is_main_process:
+                    self._log(
+                        f"  🔄 step={self._global_step} | epoch={epoch} | leftover_micro_steps="
+                        f"{micro_step % self.config.gradient_accumulation_steps} | tokens={self._tokens_seen:,}"
+                    )
 
             self._barrier()
+            if self.is_main_process:
+                self._log(f"  📊 Epoch {epoch} end — evaluating...")
             self._run_eval(val_loader, train_loader=train_loader)
             if self.is_main_process and self.config.save_last:
+                self._log(f"  💾 Saving epoch checkpoint: {self.checkpoint_last_path}")
                 self._save_checkpoint(self.checkpoint_last_path)
             self._barrier()
 
             if self.config.max_steps is not None and self._global_step >= self.config.max_steps:
+                self._log(f"⏹️  Reached max_steps={self.config.max_steps}")
                 break
 
     def _run_eval(self, val_loader, *, train_loader) -> None:
+        if self.is_main_process:
+            self._log(
+                f"  🔎 Running eval | step={self._global_step} | "
+                f"max_batches={self.config.eval_batches}"
+            )
         train_loss = self._evaluate(train_loader, max_batches=self.config.eval_batches)
         val_loss = self._evaluate(val_loader, max_batches=self.config.eval_batches)
         if self.is_main_process:
@@ -784,13 +947,17 @@ class InstructionTrainer:
             self._tokens_seen_history.append(self._tokens_seen)
             self._final_train_loss = train_loss
             self._final_val_loss = val_loss
-            self._append_metrics(train_loss, val_loss)
-            self._log(
-                f"  eval step={self._global_step} train={_format_loss(train_loss)} "
-                f"val={_format_loss(val_loss)}"
-            )
-            if self.config.save_best and _is_finite(val_loss) and val_loss < self._best_val_loss:
+            improved = self.config.save_best and _is_finite(val_loss) and val_loss < self._best_val_loss
+            if improved:
                 self._best_val_loss = float(val_loss)
+            self._append_metrics(train_loss, val_loss)
+            best_marker = " 🏆 new best val_loss!" if improved else ""
+            self._log(
+                f"  📊 eval step={self._global_step} | train={_format_loss(train_loss)} "
+                f"| val={_format_loss(val_loss)} | tokens={self._tokens_seen:,}{best_marker}"
+            )
+            if improved:
+                self._log(f"  💾 Saving best checkpoint: {self.checkpoint_best_path}")
                 self._save_checkpoint(self.checkpoint_best_path)
 
     def _evaluate(self, loader, *, max_batches: int) -> float:
@@ -880,15 +1047,16 @@ class InstructionTrainer:
         self.metrics_history_path.parent.mkdir(parents=True, exist_ok=True)
         with self.metrics_history_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False, allow_nan=False) + "\n")
+        self._log(f"  🧾 Metrics appended: {self.metrics_history_path}")
 
     def _save_config_snapshot(self) -> None:
-        _write_json(
-            self.output_dir / "training_config.snapshot.json",
-            _json_safe(self.config.__dict__),
-        )
+        snapshot_path = self.output_dir / "training_config.snapshot.json"
+        _write_json(snapshot_path, _json_safe(self.config.__dict__))
+        self._log(f"📝 Config snapshot written: {snapshot_path}")
 
     def _save_loss_plot(self) -> None:
         if not self._train_losses:
+            self._log("📉 Loss plot skipped: no eval losses recorded.")
             return
         import matplotlib
 
@@ -909,6 +1077,7 @@ class InstructionTrainer:
         self.loss_plot_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(self.loss_plot_path, dpi=150)
         plt.close(fig)
+        self._log(f"📉 Loss plot written: {self.loss_plot_path}")
 
     def _build_summary(self, *, elapsed_minutes: float) -> dict[str, Any]:
         return {
@@ -944,7 +1113,14 @@ class InstructionTrainer:
 
     def _log(self, message: str) -> None:
         if self.is_main_process:
-            print(message, flush=True)
+            _print_log(message)
+
+    def _log_every_steps(self) -> int:
+        if self.config.log_every_steps is not None:
+            return max(1, int(self.config.log_every_steps))
+        if self.config.eval_freq > 0:
+            return max(1, self.config.eval_freq // 2)
+        return 50
 
     @staticmethod
     def _is_instruction_checkpoint(checkpoint: Mapping[str, Any]) -> bool:
@@ -1043,6 +1219,49 @@ def _format_loss(value: float) -> str:
     if math.isinf(value):
         return "inf" if value > 0 else "-inf"
     return f"{value:.4f}"
+
+
+def _format_paths_for_log(paths: Path | Sequence[Path]) -> str:
+    if isinstance(paths, Path):
+        return str(paths)
+    return ", ".join(str(path) for path in paths)
+
+
+def _missing_profile_base_charset(artifacts: MDCProfileSequencePretrainArtifacts) -> tuple[str, ...]:
+    return tuple(
+        character
+        for character in DEFAULT_PROFILE_BASE_CHARSET
+        if character not in artifacts.profile_tokenizer.str_to_int
+    )
+
+
+def _format_missing_profile_chars(characters: Sequence[str], *, limit: int = 12) -> str:
+    preview = ", ".join(repr(character) for character in characters[:limit])
+    if len(characters) > limit:
+        preview += f", ... (+{len(characters) - limit} more)"
+    return preview or "none"
+
+
+def _format_optimizer_lrs(optimizers: Sequence[torch.optim.Optimizer]) -> str:
+    values: list[str] = []
+    for optimizer in optimizers:
+        for group in optimizer.param_groups:
+            lr = group.get("lr")
+            if lr is not None:
+                values.append(f"{float(lr):.2e}")
+    if not values:
+        return "n/a"
+    unique_values = sorted(set(values))
+    return ",".join(unique_values)
+
+
+def _print_log(message: str) -> None:
+    try:
+        print(message, flush=True)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or "utf-8"
+        safe_message = message.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(safe_message, flush=True)
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:

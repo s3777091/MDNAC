@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -252,6 +252,81 @@ def count_instruction_split_records(
                             continue
                     count += 1
     return count
+
+
+def count_instruction_split_records_by_split(
+    paths: str | Path | Sequence[str | Path],
+    *,
+    train_ratio: float = 0.95,
+    split_seed: int = 42,
+    artifacts: MDCProfileSequencePretrainArtifacts | None = None,
+    default_sequence_type: str = "protein",
+    instruction_field: str = "instruction",
+    input_field: str = "input",
+    output_field: str = "output",
+    max_sequence_length: int | None = None,
+    progress_every: int | None = None,
+    progress_callback: Callable[[int, int, int, int], None] | None = None,
+) -> dict[str, int]:
+    counts = {"train": 0, "val": 0}
+    rows_seen = 0
+    skipped_for_length = 0
+    progress_interval = int(progress_every or 0)
+    if progress_interval < 0:
+        raise ValueError("progress_every must be non-negative.")
+
+    for path in resolve_instruction_paths(paths):
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, raw_line in enumerate(handle, start=1):
+                if not raw_line.strip():
+                    continue
+                rows_seen += 1
+                payload = _load_jsonl_payload(path, line_number, raw_line)
+                split_name = (
+                    "train"
+                    if belongs_to_split(
+                        payload,
+                        split="train",
+                        train_ratio=train_ratio,
+                        split_seed=split_seed,
+                        fallback_key=f"{path}:{line_number}",
+                    )
+                    else "val"
+                )
+                if artifacts is not None and max_sequence_length is not None:
+                    record = instruction_record_from_payload(
+                        payload,
+                        default_sequence_type=default_sequence_type,
+                        instruction_field=instruction_field,
+                        input_field=input_field,
+                        output_field=output_field,
+                    )
+                    encoded = artifacts.encode_record(record)
+                    fused = artifacts.build_fused_batch([encoded])
+                    if fused.token_ids.size(1) > int(max_sequence_length):
+                        skipped_for_length += 1
+                        if (
+                            progress_callback is not None
+                            and progress_interval > 0
+                            and rows_seen % progress_interval == 0
+                        ):
+                            progress_callback(rows_seen, counts["train"], counts["val"], skipped_for_length)
+                        continue
+                counts[split_name] += 1
+                if (
+                    progress_callback is not None
+                    and progress_interval > 0
+                    and rows_seen % progress_interval == 0
+                ):
+                    progress_callback(rows_seen, counts["train"], counts["val"], skipped_for_length)
+
+    if progress_callback is not None and rows_seen > 0 and (
+        progress_interval <= 0 or rows_seen % progress_interval != 0
+    ):
+        progress_callback(rows_seen, counts["train"], counts["val"], skipped_for_length)
+    counts["skipped_for_length"] = skipped_for_length
+    counts["rows_seen"] = rows_seen
+    return counts
 
 
 def _load_jsonl_payload(path: Path, line_number: int, raw_line: str) -> Mapping[str, Any]:

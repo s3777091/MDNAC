@@ -12,6 +12,7 @@ DEFAULT_PROFILE_SPECIAL_TOKENS = (
     "<|bos|>",
     "<|eos|>",
 )
+DEFAULT_PROFILE_BASE_CHARSET = tuple(chr(codepoint) for codepoint in range(32, 127)) + ("\n",)
 
 
 @dataclass(slots=True)
@@ -184,7 +185,7 @@ class ProfileBPETokenizer:
     def _initialize_base_vocab(self, text: str) -> None:
         seen_chars = []
         seen_set: set[str] = set()
-        for character in text.replace("\r", ""):
+        for character in DEFAULT_PROFILE_BASE_CHARSET + tuple(text.replace("\r", "")):
             if character in seen_set:
                 continue
             seen_chars.append(character)

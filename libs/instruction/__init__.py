@@ -4,6 +4,7 @@ from .data import (
     InstructionJsonlStreamingDataset,
     create_instruction_dataloader,
     count_instruction_split_records,
+    count_instruction_split_records_by_split,
 )
 from .schema import (
     InstructionJsonlAudit,
@@ -28,6 +29,7 @@ __all__ = [
     "audit_instruction_jsonl",
     "build_instruction_training_config",
     "count_instruction_split_records",
+    "count_instruction_split_records_by_split",
     "create_instruction_dataloader",
     "discover_instruction_jsonl_training_paths",
     "instruction_record_from_payload",
