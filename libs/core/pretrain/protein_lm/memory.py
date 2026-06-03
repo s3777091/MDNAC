@@ -666,10 +666,6 @@ def run_preflight_vram_check(
         # Backward
         (loss / gradient_accumulation_steps).backward()
 
-        # Optimizer step
-        for opt in optimizer_list:
-            opt.step()
-
         peak_allocated = torch.cuda.max_memory_allocated(resolved_device)
         peak_reserved = torch.cuda.max_memory_reserved(resolved_device)
 
