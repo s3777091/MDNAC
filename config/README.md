@@ -1,7 +1,8 @@
 # Training Configs
 
 - `train.yaml`: default protein pretraining config used when code does not pass `config_path`.
-- `train.16gb.yaml`: notebook default for GPU training.
+- `train.16gb.yaml`: fallback for smaller 16GB-style GPU training.
+- `train.64gb.2gpu.yaml`: notebook default for 64GB RAM + 2 GPU protein pretraining.
 - `train.resume.yaml`: resume protein pretraining from a checkpoint.
 - `instruction.16gb.yaml`: stage-3 instruction tuning config.
 

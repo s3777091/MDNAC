@@ -429,6 +429,21 @@ PYCFG
   uv pip install --reinstall --index-url "$index_url" torch torchvision torchaudio
 }
 
+install_cuda_fast_path() {
+  case "$TORCH_VARIANT" in
+    cu*) ;;
+    *) return ;;
+  esac
+
+  log "Installing optional CUDA fast-path kernels from pyproject extra: cuda"
+  if ! uv sync --frozen --extra cuda --inexact \
+    --no-install-package torch \
+    --no-install-package torchvision \
+    --no-install-package torchaudio; then
+    warn "Optional CUDA fast-path kernels failed to install. Training still works, but linear_attention will use the slower fallback."
+  fi
+}
+
 verify_install() {
   local venv_python="$REPO_ROOT/.venv/bin/python"
 
@@ -478,6 +493,20 @@ print(f'CUDA tensor OK: {tuple(x.shape)} {x.device}')
 
   log "Verifying project import"
   "$venv_python" -c "from libs.data.config import DataConfig; print('OK: libs.data.config importable')"
+
+  case "$TORCH_VARIANT" in
+    cu*)
+      log "Verifying MDC CUDA fast path"
+      if ! "$venv_python" -c '
+from libs.core.mdc.linear_attention import is_fast_path_available, _missing_fast_path_libs
+print(f"MDC fast path available: {is_fast_path_available}")
+if not is_fast_path_available:
+    print(f"Missing fast-path libs: {_missing_fast_path_libs}")
+'; then
+        warn "MDC fast-path verification failed. Training still works, but check optional CUDA packages."
+      fi
+      ;;
+  esac
 }
 
 install_jupyter_kernel() {
@@ -507,10 +536,10 @@ print_done() {
 ==================================================================
 
 GPU test:
-  uv run python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); x=torch.randint(0,256,(2,512),device='cuda'); print('CUDA OK:', x.shape, x.device); print('Muon available:', hasattr(torch.optim, 'Muon'))"
+  ./.venv/bin/python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available()); x=torch.randint(0,256,(2,512),device='cuda'); print('CUDA OK:', x.shape, x.device); print('Muon available:', hasattr(torch.optim, 'Muon'))"
 
 Run tests:
-  uv run python -m pytest tests/
+  ./.venv/bin/python -m unittest discover -s tests -p "test_*.py"
 
 EOF
 }
@@ -528,6 +557,7 @@ main() {
   ensure_tesla_torch_variant
   sync_environment
   install_torch
+  install_cuda_fast_path
   prepare_local_files
   verify_install
   install_jupyter_kernel

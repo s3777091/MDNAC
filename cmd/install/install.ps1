@@ -5,7 +5,8 @@ param(
     [string]$Torch = "auto",
     [switch]$Recreate,
     [switch]$SkipVerify,
-    [switch]$SkipKernel
+    [switch]$SkipKernel,
+    [switch]$InstallCudaFastPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -220,6 +221,34 @@ else {
     if ($LASTEXITCODE -ne 0) { Die 'PyTorch install failed' }
 }
 
+# --- Optional CUDA fast-path kernels ---
+# Windows often has no prebuilt causal-conv1d wheel for the current
+# torch/CUDA/Python tuple. Building it requires the CUDA toolkit's nvcc, not
+# just an NVIDIA driver. Keep this opt-in on Windows so normal installs stay
+# clean and reliable.
+$CudaFastPathRequested = [bool]$InstallCudaFastPath
+if ($env:MDNAC_INSTALL_CUDA_FAST_PATH) {
+    $CudaFastPathRequested = $env:MDNAC_INSTALL_CUDA_FAST_PATH.Trim().ToLowerInvariant() -in @("1", "true", "yes", "on")
+}
+if (($Torch -eq 'cu126') -or ($Torch -eq 'cu128')) {
+    if (-not $CudaFastPathRequested) {
+        Warn 'Skipping optional CUDA fast-path kernels on Windows. Use -InstallCudaFastPath only if CUDA Toolkit/nvcc is installed.'
+    }
+    else {
+        $nvccCmd = Get-Command nvcc -ErrorAction SilentlyContinue
+        if (-not $nvccCmd) {
+            Warn 'Skipping optional CUDA fast-path kernels: nvcc was not found. Install CUDA Toolkit or use Linux/WSL for these kernels.'
+        }
+        else {
+            Log 'Installing optional CUDA fast-path kernels from pyproject extra: cuda'
+            & $UV sync --frozen --extra cuda --inexact --no-install-package torch --no-install-package torchvision --no-install-package torchaudio
+            if ($LASTEXITCODE -ne 0) {
+                Warn 'Optional CUDA fast-path kernels failed to install. Training still works, but linear_attention will use the slower fallback.'
+            }
+        }
+    }
+}
+
 # --- Local directories ---
 Log 'Creating local directories'
 $dirs = @(
@@ -320,13 +349,32 @@ if os.path.isdir(torch_lib):
     Log 'Verifying project import'
     & $VenvPython -c "from libs.data.config import DataConfig; print('OK: libs.data.config importable')"
     if ($LASTEXITCODE -ne 0) { Die 'Project import verification failed' }
+
+    if (($Torch -eq 'cu126') -or ($Torch -eq 'cu128')) {
+        Log 'Verifying MDC CUDA fast path'
+        & $VenvPython -c @"
+from libs.core.mdc.linear_attention import is_fast_path_available, _missing_fast_path_libs
+print(f'MDC fast path available: {is_fast_path_available}')
+if not is_fast_path_available:
+    print(f'Missing fast-path libs: {_missing_fast_path_libs}')
+"@
+        if ($LASTEXITCODE -ne 0) {
+            Warn 'MDC fast-path verification failed. Training still works, but check optional CUDA packages.'
+        }
+    }
 }
 
 # --- Jupyter kernel ---
 if (-not $SkipKernel) {
     Log 'Installing Jupyter kernel'
-    & $UV pip install ipykernel 2>$null
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $UV pip install ipykernel
+    $ipykernelInstallExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $previousErrorActionPreference
+    if ($ipykernelInstallExitCode -ne 0) { Die 'ipykernel install failed' }
     & $VenvPython -m ipykernel install --user --name microbial-dna-compiler --display-name 'Microbial DNA Compiler (uv GPU)'
+    if ($LASTEXITCODE -ne 0) { Die 'Jupyter kernel registration failed' }
 }
 
 # --- Done ---
@@ -337,8 +385,8 @@ Write-Host ('  DONE. Torch=' + $Torch + '  Python=' + $Python) -ForegroundColor 
 Write-Host $line -ForegroundColor Green
 Write-Host ''
 Write-Host 'GPU test:'
-Write-Host '  uv run python -c "import torch; print(torch.cuda.is_available())"'
+Write-Host '  .\.venv\Scripts\python.exe -c "import torch; print(torch.__version__, torch.cuda.is_available())"'
 Write-Host ''
 Write-Host 'Run tests:'
-Write-Host '  uv run python -m pytest tests/'
+Write-Host '  .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"'
 Write-Host ''

@@ -29,6 +29,9 @@ Current training flow:
 
 # Skip torch entirely:
 .\cmd\install\install.ps1 -Recreate -Torch none
+
+# Optional Windows CUDA extension build (requires CUDA Toolkit/nvcc):
+.\cmd\install\install.ps1 -Torch cu128 -InstallCudaFastPath
 ```
 
 Optional flags: `-SkipVerify`, `-SkipKernel`, `-Python 3.12`.
@@ -57,8 +60,16 @@ bash cmd/install/install.sh --recreate --skip-verify --skip-kernel
 
 ### Verify GPU
 
+Windows:
+
+```powershell
+.\.venv\Scripts\python.exe -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.version.cuda)"
+```
+
+Linux:
+
 ```bash
-uv run python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.version.cuda)"
+./.venv/bin/python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.version.cuda)"
 ```
 
 On a working GPU machine this prints `True` for `cuda.is_available()` and shows the CUDA version.
@@ -72,7 +83,7 @@ After a normal `git clone`, install, and opening notebooks from inside this repo
 Use these environment variables only when the notebook kernel is not started from the repo, or when you intentionally want another config:
 
 - `MDNAC_REPO_DIR`: absolute path to the cloned repo, for example `/content/Microbial-DNA-Compiler` on Colab or `C:\Users\you\Microbial DNA Compiler` on Windows.
-- `MDNAC_TRAIN_CONFIG`: optional override for protein pretrain/eval config. Default: `config/train.16gb.yaml` in the training notebooks.
+- `MDNAC_TRAIN_CONFIG`: optional override for protein pretrain/eval config. Default: `config/train.64gb.2gpu.yaml` in the protein pretrain notebook.
 - `MDNAC_INSTRUCTION_CONFIG`: optional override for instruction tuning config. Default: `config/instruction.16gb.yaml`.
 - `MDNAC_EVAL_CHECKPOINT`: optional checkpoint override for evaluation notebooks.
 
@@ -91,6 +102,9 @@ The default (`auto`) runs `nvidia-smi`, parses the CUDA version, and picks autom
 1. `uv sync --frozen` installs torch from `uv.lock` (PyPI default, usually CPU on Windows).
 2. The installer uses `uv pip install --reinstall --index-url <wheel-index>` to replace torch with the correct CUDA/CPU variant.
 3. `pyproject.toml` declares `torch>=2.11` in base dependencies so `uv sync` always resolves a torch version compatible with the lock file.
+4. For Linux CUDA variants, the installer also syncs the `cuda` extra for MDC fast-path kernels (`causal-conv1d`, `flash-linear-attention`) while protecting the selected PyTorch wheel. On Windows, this step is opt-in with `-InstallCudaFastPath` because `causal-conv1d` often requires CUDA Toolkit/nvcc and may not have a matching wheel.
+
+After a CUDA install, prefer the venv Python directly (`.\.venv\Scripts\python.exe` on Windows or `./.venv/bin/python` on Linux), or use `uv run --no-sync ...`. Plain `uv run ...` may sync from `uv.lock` and replace the selected CUDA torch wheel.
 
 ## Local RefSeq Build
 
@@ -164,7 +178,8 @@ Legacy notebooks (kept for backward compatibility):
 Repository YAML files live under `config/`:
 
 - `config/train.yaml` — default protein training config for code paths that do not pass `config_path`.
-- `config/train.16gb.yaml` — notebook default for 16GB-style GPU training.
+- `config/train.64gb.2gpu.yaml` — notebook default for 64GB RAM + 2 GPU protein pretraining.
+- `config/train.16gb.yaml` — fallback for smaller 16GB-style GPU training.
 - `config/train.resume.yaml` — resume config.
 - `config/instruction.16gb.yaml` — stage-3 instruction tuning config.
 
@@ -188,7 +203,7 @@ In notebooks, use the default config after a normal clone, or set `MDNAC_TRAIN_C
 
 All training logic lives in `libs.core.pretrain.protein_lm.trainer.ProteinPretrainTrainer`, which reuses existing helpers from `libs.core`.
 
-The pretrain notebook loads shared paths, model settings, optimizer choice (`muon` default), multi-GPU options, and optional MinIO overrides from `config/train.yaml`. Keep sensitive MinIO credentials in `.env` or environment variables and only put non-secret endpoint or bucket overrides in `config/train.yaml` when needed.
+The pretrain notebook loads shared paths, model settings, optimizer choice (`muon` default), multi-GPU options, and optional MinIO overrides from the active training YAML. Keep sensitive MinIO credentials in `.env` or environment variables and only put non-secret endpoint or bucket overrides in training YAML files when needed.
 
 The notebooks call `libs.core` helpers to build or load the protein `SequenceTokenizer`, create causal-LM batches from `train.txt`, instantiate ProGen backbone configs for the MDC decoder, save/load resumable `progen_protein_lm` checkpoints, and benchmark protein next-token accuracy.
 
@@ -571,10 +586,10 @@ Create or refresh the local environment:
 uv sync
 ```
 
-Include the optional MinIO backend dependencies:
+Include the optional MDC CUDA fast-path kernels:
 
 ```bash
-uv sync --extra minio
+uv sync --extra cuda
 ```
 
 Common dependency workflows:
@@ -582,14 +597,22 @@ Common dependency workflows:
 ```bash
 uv add <package>
 uv add --group dev <package>
-uv add --optional minio <package>
+uv add --optional cuda <package>
 uv remove <package>
 ```
 
 Run commands inside the managed environment:
 
+Windows:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+```
+
+Linux:
+
 ```bash
-uv run python -m unittest discover -s tests -p "test_*.py"
+./.venv/bin/python -m unittest discover -s tests -p "test_*.py"
 ```
 
 ### Ubuntu/Linux quick start
@@ -610,6 +633,14 @@ No notebook dependencies are installed by default.
 
 ## Run tests
 
+Windows:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+```
+
+Linux:
+
 ```bash
-uv run python -m unittest discover -s tests -p "test_*.py"
+./.venv/bin/python -m unittest discover -s tests -p "test_*.py"
 ```
