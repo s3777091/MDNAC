@@ -685,12 +685,15 @@ def run_preflight_vram_check(
         torch.cuda.empty_cache()
         result["fit"] = False
         result["oom_during_preflight"] = True
+        result["profile_error"] = "OOM during preflight profiling"
 
     # Write report if path provided
     if report_output_path is not None:
         write_vram_report(result, report_output_path)
 
     if not result["fit"]:
+        peak_allocated = result.get("peak_allocated_gb")
+        peak_allocated_display = "OOM" if result.get("oom_during_preflight") else peak_allocated
         suggested_fixes = [
             "1. Use batch_size=1",
             "2. Reduce context_length to 512 or 384",
@@ -706,7 +709,7 @@ def run_preflight_vram_check(
             f"  context_length={context_length}\n"
             f"  model_params={param_count:,}\n"
             f"  target_vram_gb={target_vram_gb:.1f}\n"
-            f"  peak_allocated_gb={result.get('peak_allocated_gb', 'OOM')}\n"
+            f"  peak_allocated_gb={peak_allocated_display}\n"
             f"  fast_path_available={_is_fast_path_available}\n"
         )
         if _missing_libs:

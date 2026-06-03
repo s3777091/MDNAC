@@ -26,6 +26,7 @@ from libs.core.pretrain.training_config import (
     create_protein_training_optimizer,
     load_protein_training_config,
 )
+from libs.notebook_runtime import apply_training_config_notebook_overrides
 from libs.core.pretrain.protein_lm.core import (
     build_or_load_protein_tokenizer_from_text_paths,
     discover_protein_train_text_paths,
@@ -115,7 +116,9 @@ class ProteinPretrainTrainer:
         config_path: Path | str | None = None,
     ) -> None:
         self.project_root = Path(project_root).resolve()
-        self.config = load_protein_training_config(self.project_root, config_path=config_path)
+        self.config = apply_training_config_notebook_overrides(
+            load_protein_training_config(self.project_root, config_path=config_path)
+        )
         self.minio_data_config = build_protein_training_data_config(self.project_root, self.config)
 
         self._paths = self.config["paths"]
