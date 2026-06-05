@@ -20,6 +20,8 @@ RESERVED_TRAIN_TOKENS = (
 DEFAULT_INSTRUCTION_FIELD = "instruction"
 DEFAULT_INPUT_FIELD = "input"
 DEFAULT_OUTPUT_FIELD = "output"
+PROMPT_FORMAT_ALPACA = "alpaca"
+PROMPT_FORMAT_COMPACT_PROFILE = "compact_profile"
 INSTRUCTION_PROMPT_PREAMBLE = (
     "Below is an instruction that describes a task. "
     "Write a response that appropriately completes the request."
@@ -105,6 +107,18 @@ def format_instruction_prompt(instruction: str, input_text: str = "") -> str:
     return clean_profile_text(prompt)
 
 
+def format_instruction_profile(
+    instruction: str,
+    input_text: str = "",
+    *,
+    prompt_format: str = PROMPT_FORMAT_ALPACA,
+) -> str:
+    normalized_format = _normalize_prompt_format(prompt_format)
+    if normalized_format == PROMPT_FORMAT_ALPACA:
+        return format_instruction_prompt(instruction, input_text)
+    return clean_profile_text(instruction if not input_text else f"{instruction}; input {input_text}")
+
+
 def instruction_record_from_payload(
     payload: Mapping[str, Any],
     *,
@@ -112,6 +126,7 @@ def instruction_record_from_payload(
     instruction_field: str = DEFAULT_INSTRUCTION_FIELD,
     input_field: str = DEFAULT_INPUT_FIELD,
     output_field: str = DEFAULT_OUTPUT_FIELD,
+    prompt_format: str = PROMPT_FORMAT_ALPACA,
 ) -> MDCProfileSequenceRecord:
     instruction = clean_profile_text(payload.get(instruction_field))
     input_text = clean_profile_text(payload.get(input_field))
@@ -137,8 +152,9 @@ def instruction_record_from_payload(
         or metadata.get("sequence_type")
         or default_sequence_type
     ).strip().lower()
-    profile = format_instruction_prompt(instruction, input_text)
-    metadata.setdefault("instruction_prompt_format", "llms_from_scratch_ch07")
+    normalized_prompt_format = _normalize_prompt_format(prompt_format)
+    profile = format_instruction_profile(instruction, input_text, prompt_format=normalized_prompt_format)
+    metadata.setdefault("instruction_prompt_format", normalized_prompt_format)
     return MDCProfileSequenceRecord(
         profile=profile,
         sequence=sequence,
@@ -154,6 +170,7 @@ def iter_instruction_records(
     instruction_field: str = DEFAULT_INSTRUCTION_FIELD,
     input_field: str = DEFAULT_INPUT_FIELD,
     output_field: str = DEFAULT_OUTPUT_FIELD,
+    prompt_format: str = PROMPT_FORMAT_ALPACA,
 ) -> Iterable[MDCProfileSequenceRecord]:
     for path in resolve_instruction_paths(paths):
         with path.open("r", encoding="utf-8") as handle:
@@ -173,6 +190,7 @@ def iter_instruction_records(
                         instruction_field=instruction_field,
                         input_field=input_field,
                         output_field=output_field,
+                        prompt_format=prompt_format,
                     )
                 except ValueError as exc:
                     raise ValueError(f"{exc} Source: {path}:{line_number}.") from exc
@@ -225,6 +243,7 @@ def audit_instruction_jsonl(
     instruction_field: str = DEFAULT_INSTRUCTION_FIELD,
     input_field: str = DEFAULT_INPUT_FIELD,
     output_field: str = DEFAULT_OUTPUT_FIELD,
+    prompt_format: str = PROMPT_FORMAT_ALPACA,
     preview_rows: int = 3,
 ) -> InstructionJsonlAudit:
     resolved_paths = resolve_instruction_paths(paths)
@@ -281,7 +300,11 @@ def audit_instruction_jsonl(
                         {
                             "instruction": instruction[:240],
                             "input": input_text[:240],
-                            "profile_prompt": format_instruction_prompt(instruction, input_text)[:360],
+                            "profile_prompt": format_instruction_profile(
+                                instruction,
+                                input_text,
+                                prompt_format=prompt_format,
+                            )[:360],
                             "output_prefix": sequence[:80],
                             "output_length": len(sequence),
                             "sequence_type": sequence_type,
@@ -302,3 +325,18 @@ def audit_instruction_jsonl(
         output_format_counts=dict(output_format_counts),
         preview=tuple(preview),
     )
+
+
+def _normalize_prompt_format(value: str) -> str:
+    normalized = str(value or PROMPT_FORMAT_ALPACA).strip().lower()
+    aliases = {
+        "llms_from_scratch_ch07": PROMPT_FORMAT_ALPACA,
+        "instruction": PROMPT_FORMAT_ALPACA,
+        "alpaca": PROMPT_FORMAT_ALPACA,
+        "compact": PROMPT_FORMAT_COMPACT_PROFILE,
+        "compact_profile": PROMPT_FORMAT_COMPACT_PROFILE,
+        "profile": PROMPT_FORMAT_COMPACT_PROFILE,
+    }
+    if normalized not in aliases:
+        raise ValueError("prompt_format must be one of: alpaca, compact_profile.")
+    return aliases[normalized]

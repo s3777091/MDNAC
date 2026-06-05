@@ -1,0 +1,66 @@
+paths:
+  instruction_jsonl_path: data/compiled/refseq_bacteria_span_completion/instruction.jsonl
+  instruction_part_dir: data/compiled/refseq_bacteria_span_completion
+  artifact_source_jsonl: data/compiled/refseq_bacteria_span_completion/instruction.jsonl
+  base_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
+  checkpoint_dir: data/checkpoints/profile_span_completion
+  artifact_dir: data/compiled/refseq_bacteria_span_completion_profile_pretrain
+  sequence_tokenizer_map_path: data/compiled/refseq_bacteria_protein/tokenizer_map.json
+schema:
+  default_sequence_type: protein
+  instruction_field: instruction
+  input_field: input
+  output_field: output
+  prompt_format: compact_profile
+data:
+  prefer_instruction_parts: false
+  instruction_part_glob: instruction_part_*.jsonl
+  train_ratio: 0.98
+  split_seed: 42
+  batch_size: 8
+  num_workers: 4
+  pin_memory: auto
+  shuffle_files: true
+  shuffle_records: true
+  shuffle_buffer_size: 8192
+  audit_before_training: true
+  reuse_existing_audit: false
+  count_splits_before_training: auto
+  count_progress_every: 250000
+artifacts:
+  profile_vocab_size: 512
+  profile_sample_size: 100000
+  kmer_size: 3
+  auto_detect_sequence_tokenizer_map: true
+  rebuild_artifacts: false
+training:
+  num_epochs: 2
+  max_steps:
+  gradient_accumulation_steps: 8
+  eval_freq: 100
+  eval_batches: 64
+  log_every_steps: 10
+  save_every_steps: 250
+  grad_clip_norm: 1.0
+  save_last: true
+  save_best: true
+  save_final: true
+  train_on_prompt: false
+  include_separator_in_loss: false
+optimizer:
+  type: muon
+  learning_rate: 0.00005
+  muon_learning_rate: 0.00005
+  weight_decay: 0.1
+  fused: auto
+runtime:
+  device: auto
+  multi_gpu_mode: auto
+  ddp_find_unused_parameters: false
+  data_parallel_device_ids:
+  mixed_precision: fp16
+  seed: 123
+resume:
+  resume_if_available: true
+  restore_optimizer_state: true
+  strict_backbone: true

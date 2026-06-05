@@ -132,6 +132,23 @@ class InstructionStreamingTests(unittest.TestCase):
         self.assertEqual(0, counts["skipped_for_length"])
         self.assertEqual(len(rows), progress[-1][0])
 
+    def test_compact_profile_prompt_format_keeps_instruction_and_input_compact(self) -> None:
+        row = {
+            "instruction": "task protein span completion; labels oxidoreductase",
+            "input": "mask_length 8; left_flank AAAAAAAA; right_flank CCCCCCCC",
+            "output": "MTEYKLVV",
+        }
+
+        record = instruction_record_from_payload(row, prompt_format="compact_profile")
+
+        self.assertEqual(
+            "task protein span completion; labels oxidoreductase; input "
+            "mask_length 8; left_flank AAAAAAAA; right_flank CCCCCCCC",
+            record.profile,
+        )
+        self.assertEqual("compact_profile", record.metadata["instruction_prompt_format"])
+        self.assertNotIn("### Instruction", record.profile)
+
 
 if __name__ == "__main__":
     unittest.main()

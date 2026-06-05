@@ -52,7 +52,8 @@ class FusedProfileSequenceBatch:
                 if include_separator_in_loss
                 else self.sequence_spans[:, 0]
             ).unsqueeze(1)
-            valid_targets = valid_targets & (target_positions >= loss_start)
+            loss_end = self.sequence_spans[:, 1].unsqueeze(1)
+            valid_targets = valid_targets & (target_positions >= loss_start) & (target_positions < loss_end)
 
         labels = labels.masked_fill(~valid_targets, ignore_index)
         return CausalLMBatch(

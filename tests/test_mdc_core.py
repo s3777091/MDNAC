@@ -111,7 +111,7 @@ class ProfileSequenceBatchBuilderTests(unittest.TestCase):
                     IGNORE_INDEX,
                     batch.token_ids[0, 4],
                     batch.token_ids[0, 5],
-                    batch.token_ids[0, 6],
+                    IGNORE_INDEX,
                 ]
             ],
             dtype=torch.long,

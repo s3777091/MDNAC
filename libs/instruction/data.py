@@ -39,6 +39,7 @@ class InstructionJsonlStreamingDataset(IterableDataset[MDCEncodedProfileSequence
         instruction_field: str = "instruction",
         input_field: str = "input",
         output_field: str = "output",
+        prompt_format: str = "alpaca",
         max_sequence_length: int | None = None,
         shuffle_files: bool = True,
         shuffle_records: bool = True,
@@ -64,6 +65,7 @@ class InstructionJsonlStreamingDataset(IterableDataset[MDCEncodedProfileSequence
         self.instruction_field = instruction_field
         self.input_field = input_field
         self.output_field = output_field
+        self.prompt_format = prompt_format
         self.max_sequence_length = max_sequence_length
         self.shuffle_files = bool(shuffle_files)
         self.shuffle_records = bool(shuffle_records)
@@ -141,6 +143,7 @@ class InstructionJsonlStreamingDataset(IterableDataset[MDCEncodedProfileSequence
                         instruction_field=self.instruction_field,
                         input_field=self.input_field,
                         output_field=self.output_field,
+                        prompt_format=self.prompt_format,
                     )
                     encoded = self.artifacts.encode_record(record)
                     if self.max_sequence_length is not None:
@@ -161,6 +164,7 @@ def create_instruction_dataloader(
     instruction_field: str = "instruction",
     input_field: str = "input",
     output_field: str = "output",
+    prompt_format: str = "alpaca",
     max_sequence_length: int | None = None,
     batch_size: int = 2,
     drop_last: bool = False,
@@ -186,6 +190,7 @@ def create_instruction_dataloader(
         instruction_field=instruction_field,
         input_field=input_field,
         output_field=output_field,
+        prompt_format=prompt_format,
         max_sequence_length=max_sequence_length,
         shuffle_files=shuffle_files,
         shuffle_records=shuffle_records,
@@ -222,6 +227,7 @@ def count_instruction_split_records(
     instruction_field: str = "instruction",
     input_field: str = "input",
     output_field: str = "output",
+    prompt_format: str = "alpaca",
     max_sequence_length: int | None = None,
 ) -> int:
     count = 0
@@ -245,6 +251,7 @@ def count_instruction_split_records(
                             instruction_field=instruction_field,
                             input_field=input_field,
                             output_field=output_field,
+                            prompt_format=prompt_format,
                         )
                         encoded = artifacts.encode_record(record)
                         fused = artifacts.build_fused_batch([encoded])
@@ -264,6 +271,7 @@ def count_instruction_split_records_by_split(
     instruction_field: str = "instruction",
     input_field: str = "input",
     output_field: str = "output",
+    prompt_format: str = "alpaca",
     max_sequence_length: int | None = None,
     progress_every: int | None = None,
     progress_callback: Callable[[int, int, int, int], None] | None = None,
@@ -300,6 +308,7 @@ def count_instruction_split_records_by_split(
                         instruction_field=instruction_field,
                         input_field=input_field,
                         output_field=output_field,
+                        prompt_format=prompt_format,
                     )
                     encoded = artifacts.encode_record(record)
                     fused = artifacts.build_fused_batch([encoded])

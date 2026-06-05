@@ -72,6 +72,7 @@ class InstructionTrainingConfig:
     instruction_field: str = "instruction"
     input_field: str = "input"
     output_field: str = "output"
+    prompt_format: str = "alpaca"
     audit_before_training: bool = True
     reuse_existing_audit: bool = False
     profile_vocab_size: int = 256
@@ -231,6 +232,7 @@ def build_instruction_training_config(
         instruction_field=str(_config_value(config_mapping, ("schema", "instruction_field")) or "instruction"),
         input_field=str(_config_value(config_mapping, ("schema", "input_field")) or "input"),
         output_field=str(_config_value(config_mapping, ("schema", "output_field")) or "output"),
+        prompt_format=str(_config_value(config_mapping, ("schema", "prompt_format")) or "alpaca"),
         audit_before_training=_bool_value(
             _config_value(config_mapping, ("data", "audit_before_training"), ("training", "audit_before_training")),
             True,
@@ -345,6 +347,7 @@ def _sample_instruction_records_for_artifacts(
     instruction_field: str,
     input_field: str,
     output_field: str,
+    prompt_format: str,
     sample_size: int,
 ):
     if sample_size <= 0:
@@ -357,6 +360,7 @@ def _sample_instruction_records_for_artifacts(
             instruction_field=instruction_field,
             input_field=input_field,
             output_field=output_field,
+            prompt_format=prompt_format,
         )
     ):
         if index >= sample_size:
@@ -496,6 +500,7 @@ class InstructionTrainer:
                 instruction_field=self.config.instruction_field,
                 input_field=self.config.input_field,
                 output_field=self.config.output_field,
+                prompt_format=self.config.prompt_format,
             )
             if self.is_main_process:
                 _write_json(audit_path, audit.to_dict())
@@ -519,6 +524,7 @@ class InstructionTrainer:
                 instruction_field=self.config.instruction_field,
                 input_field=self.config.input_field,
                 output_field=self.config.output_field,
+                prompt_format=self.config.prompt_format,
                 max_sequence_length=int(self.model_config.context_length),
                 progress_every=self.config.count_progress_every,
                 progress_callback=self._log_split_count_progress,
@@ -617,6 +623,7 @@ class InstructionTrainer:
             instruction_field=self.config.instruction_field,
             input_field=self.config.input_field,
             output_field=self.config.output_field,
+            prompt_format=self.config.prompt_format,
             sample_size=self.config.artifact_profile_sample_size,
         )
         sequence_types = {record.sequence_type for record in records}
@@ -750,6 +757,7 @@ class InstructionTrainer:
             instruction_field=self.config.instruction_field,
             input_field=self.config.input_field,
             output_field=self.config.output_field,
+            prompt_format=self.config.prompt_format,
             max_sequence_length=int(self.model_config.context_length),
             batch_size=self.config.batch_size,
             drop_last=drop_last,
@@ -1042,7 +1050,13 @@ class InstructionTrainer:
             "tokens_seen": self._tokens_seen,
             "train_loss": _json_loss(train_loss),
             "val_loss": _json_loss(val_loss),
+            "train_perplexity": _json_perplexity(train_loss),
+            "val_perplexity": _json_perplexity(val_loss),
+            "learning_rate": self.config.learning_rate,
+            "muon_learning_rate": self.config.muon_learning_rate,
             "best_val_loss": None if math.isinf(self._best_val_loss) else self._best_val_loss,
+            "checkpoint_last_path": str(self.checkpoint_last_path),
+            "checkpoint_best_path": str(self.checkpoint_best_path),
         }
         self.metrics_history_path.parent.mkdir(parents=True, exist_ok=True)
         with self.metrics_history_path.open("a", encoding="utf-8") as handle:
@@ -1204,6 +1218,12 @@ def _normalize_app_state_dict(state_dict: Mapping[str, Any]) -> dict[str, Any]:
 
 def _json_loss(value: float) -> float | None:
     return float(value) if _is_finite(value) else None
+
+
+def _json_perplexity(value: float) -> float | None:
+    if not _is_finite(value):
+        return None
+    return math.exp(min(float(value), 50.0))
 
 
 def _is_finite(value: Any) -> bool:
