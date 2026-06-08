@@ -6,6 +6,26 @@ from .types import ExternalStructureProviderSpec
 def recommended_structure_providers() -> tuple[ExternalStructureProviderSpec, ...]:
     return (
         ExternalStructureProviderSpec(
+            name="OpenFold",
+            provider_type="open_local_model",
+            recommended_role="GPU worker for sequence-to-structure prediction after sequence completion",
+            strengths=(
+                "open PyTorch reproduction of AlphaFold 2",
+                "fits a separate RunPod GPU worker that returns PDB or mmCIF structures",
+                "supports MSA-based inference and SoloSeq single-sequence inference",
+            ),
+            limitations=(
+                "Linux/CUDA runtime and model/resource volume should stay outside core code",
+                "MSA-based inference requires large sequence and template databases",
+                "SoloSeq is easier to operate but has a shorter sequence-length limit",
+            ),
+            install_hint=(
+                "Install OpenFold in a dedicated GPU image or volume and expose it through "
+                "api/runpod_structure_app.py."
+            ),
+            license_note="OpenFold is Apache-2.0; check downloaded parameter licenses separately.",
+        ),
+        ExternalStructureProviderSpec(
             name="AlphaFold 3",
             provider_type="closed_or_restricted_server/model",
             recommended_role="highest-accuracy final validation for structure and complexes",

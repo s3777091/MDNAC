@@ -1,0 +1,80 @@
+environment: local
+
+environments:
+  local:
+    server:
+      host: 127.0.0.1
+      port: 8010
+      reload: true
+    runpod:
+      enabled: false
+    openfold:
+      repo_path: ../openfold
+      python_executable: python
+      output_root: data/structure_predictions
+      template_mmcif_dir: data/openfold/pdb_mmcif/mmcif_files
+      config_preset: seq_model_esm1b_ptm
+      model_device: cuda:0
+      output_format: pdb
+      timeout_seconds: 7200
+      cpus: 4
+      min_sequence_length: 1
+      max_sequence_length: 1022
+      include_structure_text: true
+      max_response_structure_bytes: 2000000
+      use_precomputed_alignments: false
+      precomputed_alignments_dir:
+      openfold_checkpoint_path: data/openfold/resources/openfold_soloseq_params/seq_model_esm1b_ptm.pt
+      jax_param_path:
+      data_random_seed:
+      skip_relaxation: false
+      long_sequence_inference: false
+      use_single_seq_mode: true
+      database_paths: {}
+      binary_paths: {}
+      extra_args: []
+
+  production:
+    server:
+      host: 0.0.0.0
+      port: 8010
+      reload: false
+    runpod:
+      enabled: true
+      endpoint_name: mdnac-structure-openfold-api
+      gpu: AMPERE_24
+      cpu:
+      workers:
+        min: 0
+        max: 1
+      idle_timeout: 300
+      flashboot: true
+      dependencies:
+        - PyYAML
+        - fastapi
+        - uvicorn[standard]
+    openfold:
+      repo_path: /opt/openfold
+      python_executable: python
+      output_root: /runpod-volume/mdnac/structure_predictions
+      template_mmcif_dir: /runpod-volume/openfold/data/pdb_mmcif/mmcif_files
+      config_preset: seq_model_esm1b_ptm
+      model_device: cuda:0
+      output_format: pdb
+      timeout_seconds: 7200
+      cpus: 8
+      min_sequence_length: 1
+      max_sequence_length: 1022
+      include_structure_text: true
+      max_response_structure_bytes: 2000000
+      use_precomputed_alignments: false
+      precomputed_alignments_dir:
+      openfold_checkpoint_path: /runpod-volume/openfold/resources/openfold_soloseq_params/seq_model_esm1b_ptm.pt
+      jax_param_path:
+      data_random_seed:
+      skip_relaxation: false
+      long_sequence_inference: false
+      use_single_seq_mode: true
+      database_paths: {}
+      binary_paths: {}
+      extra_args: []

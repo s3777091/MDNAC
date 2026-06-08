@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mdnac-protein-api"
+version = "0.1.0"
+description = "Standalone APIs for MDNAC protein generation and OpenFold structure prediction."
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+local = [
+    "fastapi>=0.111",
+    "onnxruntime>=1.18",
+    "uvicorn[standard]>=0.30",
+]
+production = [
+    "fastapi>=0.111",
+    "onnxruntime-gpu>=1.18",
+    "runpod-flash",
+    "uvicorn[standard]>=0.30",
+]
+structure = [
+    "fastapi>=0.111",
+    "runpod-flash",
+    "uvicorn[standard]>=0.30",
+]
+export = [
+    "onnx>=1.16",
+    "onnxruntime>=1.18",
+    "torch>=2.11",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[project.scripts]
+mdnac-api = "interfere.server:main"
+mdnac-export-onnx = "tools.onnx.export_checkpoint:main"
+mdnac-generate = "interfere.inference:main"
+mdnac-structure-api = "structure_predictor.server:main"
+mdnac-openfold-predict = "structure_predictor.openfold:main"
+
+[tool.setuptools.packages.find]
+include = ["interfere*", "structure_predictor*", "tools*"]
+
+[tool.setuptools.package-dir]
+"" = "."
+
+[tool.ruff]
+line-length = 100

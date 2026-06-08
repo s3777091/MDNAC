@@ -1,11 +1,11 @@
 paths:
   instruction_jsonl_path: data/compiled/refseq_bacteria_span_completion/instruction.jsonl
   instruction_part_dir: data/compiled/refseq_bacteria_span_completion
-  artifact_source_jsonl: data/compiled/refseq_bacteria_span_completion/instruction.jsonl
+  artifact_source_jsonl: data/compiled/refseq_bacteria_span_completion
   base_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
   checkpoint_dir: data/checkpoints/profile_span_completion
   artifact_dir: data/compiled/refseq_bacteria_span_completion_profile_pretrain
-  sequence_tokenizer_map_path: data/compiled/refseq_bacteria_protein/tokenizer_map.json
+  sequence_tokenizer_map_path: tokenizer_map.json
 schema:
   default_sequence_type: protein
   instruction_field: instruction
@@ -13,7 +13,7 @@ schema:
   output_field: output
   prompt_format: compact_profile
 data:
-  prefer_instruction_parts: false
+  prefer_instruction_parts: true
   instruction_part_glob: instruction_part_*.jsonl
   train_ratio: 0.98
   split_seed: 42

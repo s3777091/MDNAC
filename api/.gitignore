@@ -1,0 +1,9 @@
+data/model/*
+!data/model/.gitkeep
+data/structure_predictions/
+data/openfold/
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/

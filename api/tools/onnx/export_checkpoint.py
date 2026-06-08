@@ -10,25 +10,15 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+
+API_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = API_ROOT.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 DEFAULT_OPSET = 17
 DEFAULT_ATOL = 1e-4
-
-
-def _json_safe(value: Any) -> Any:
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, torch.device | torch.dtype):
-        return str(value)
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    return value
 
 
 class CausalLMExportWrapper(nn.Module):
@@ -40,28 +30,20 @@ class CausalLMExportWrapper(nn.Module):
         return self.model(input_ids)
 
 
-def _default_output_path(checkpoint_path: Path) -> Path:
-    export_dir = Path(__file__).resolve().parent / "exports"
-    stem = checkpoint_path.stem
-    if stem == "checkpoint_last" and checkpoint_path.parent.name:
-        stem = checkpoint_path.parent.name
-    return export_dir / f"{stem}.onnx"
-
-
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        description="Export a train_ava training checkpoint (.pt) to ONNX.",
+        description="Export an MDNAC protein training checkpoint (.pt) to ONNX.",
     )
     parser.add_argument(
         "--checkpoint",
         required=True,
-        help="Path to a training checkpoint such as checkpoint_best.pt or checkpoint_last.pt.",
+        help="Path to a protein training checkpoint such as checkpoint_best.pt or checkpoint_last.pt.",
     )
     parser.add_argument(
         "--output",
         default=None,
-        help="Output ONNX path. Defaults to tools/onnx/exports/<run_name>.onnx.",
+        help="Output ONNX path. Defaults to api/data/model/<run_name>.onnx.",
     )
     parser.add_argument(
         "--batch-size",
@@ -100,14 +82,67 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _default_output_path(checkpoint_path: Path) -> Path:
+    stem = checkpoint_path.stem
+    if stem in {"checkpoint_best", "checkpoint_last"} and checkpoint_path.parent.name:
+        stem = checkpoint_path.parent.name
+    return API_ROOT / "data" / "model" / f"{stem}.onnx"
+
+
 def _require_onnx_export_dependencies() -> None:
     try:
         import onnx  # noqa: F401
     except ImportError as exc:
         raise RuntimeError(
             "The `onnx` package is required for export. "
-            "Install it with `uv sync --extra onnx`."
+            "Install the api project export extra from the `api` directory."
         ) from exc
+
+
+def _load_checkpoint(checkpoint_path: Path) -> dict[str, Any]:
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location=torch.device("cpu"), weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(checkpoint_path, map_location=torch.device("cpu"))
+    if not isinstance(checkpoint, dict):
+        raise ValueError(f"Expected checkpoint dict, got {type(checkpoint).__name__}.")
+    return checkpoint
+
+
+def _load_checkpoint_model(
+    checkpoint_path: Path,
+) -> tuple[nn.Module, dict[str, Any], dict[str, Any], str]:
+    from libs.core.mdc.modeling.decoder.model import MDCDecoderModel
+    from libs.core.pretrain.distributed import normalize_parallel_state_dict
+    from libs.core.pretrain.protein_lm.support.backbone import (
+        PROGEN_PROTEIN_MODEL_FAMILY,
+        is_supported_protein_checkpoint_family,
+    )
+
+    checkpoint = _load_checkpoint(checkpoint_path)
+    if "model_config" not in checkpoint or "model_state_dict" not in checkpoint:
+        raise ValueError(
+            "Expected a protein checkpoint containing `model_config` and `model_state_dict`. "
+            f"Got keys: {sorted(checkpoint.keys())}"
+        )
+
+    model_family = str(checkpoint.get("model_family") or PROGEN_PROTEIN_MODEL_FAMILY)
+    if not is_supported_protein_checkpoint_family(model_family):
+        raise ValueError(
+            "Only MDNAC protein checkpoints can be exported to ONNX here. "
+            f"Received: {model_family}"
+        )
+
+    raw_model_config = checkpoint["model_config"]
+    model_config = (
+        raw_model_config.to_dict()
+        if hasattr(raw_model_config, "to_dict")
+        else dict(raw_model_config)
+    )
+    model = MDCDecoderModel(model_config)
+    model.load_state_dict(normalize_parallel_state_dict(checkpoint["model_state_dict"]))
+    model.eval()
+    return model, model_config, checkpoint, model_family
 
 
 def _resolve_seq_len(model_config: dict[str, Any], seq_len: int | None) -> int:
@@ -141,33 +176,6 @@ def _build_example_inputs(
     return (input_ids,), input_names, dynamic_axes
 
 
-def _load_checkpoint_model(
-    checkpoint_path: Path,
-) -> tuple[nn.Module, dict[str, Any], dict[str, Any], str]:
-    from interfere.artifacts import detect_model_family
-    from train.models.qwen3_5.ch05 import build_model as build_qwen3_5_model
-    from train.pipeline.runtime.artifacts import load_checkpoint
-
-    checkpoint = load_checkpoint(checkpoint_path, torch.device("cpu"))
-    if "model_config" not in checkpoint or "model_state_dict" not in checkpoint:
-        raise ValueError(
-            "Expected a training checkpoint containing `model_config` and `model_state_dict`. "
-            f"Got keys: {sorted(checkpoint.keys())}"
-        )
-
-    model_config = checkpoint["model_config"]
-    model_family = detect_model_family(checkpoint)
-    if model_family != "qwen3_5":
-        raise ValueError(
-            "Only Qwen3.5 checkpoints can be exported to ONNX in this repo. "
-            f"Received: {model_family}"
-        )
-    model = build_qwen3_5_model(model_config)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
-    return model, model_config, checkpoint, model_family
-
-
 def _verify_with_onnxruntime(
     output_path: Path,
     reference_output: np.ndarray,
@@ -190,7 +198,7 @@ def _verify_with_onnxruntime(
         name: tensor.detach().cpu().numpy()
         for name, tensor in zip(input_names, example_inputs, strict=True)
     }
-    ort_output = session.run(["logits"], ort_inputs)[0]
+    ort_output = np.asarray(session.run(["logits"], ort_inputs)[0], dtype=np.float32)
     max_abs_diff = float(np.max(np.abs(reference_output - ort_output)))
     if not np.allclose(reference_output, ort_output, atol=atol, rtol=0.0):
         raise RuntimeError(
@@ -221,22 +229,15 @@ def _write_metadata(
     dynamic_shapes: bool,
     verification: dict[str, Any],
 ) -> None:
+    tokenizer_map = _resolve_tokenizer_map(checkpoint)
     metadata = {
         "artifact_format": "onnx",
         "checkpoint_path": str(checkpoint_path.resolve()),
-        "onnx_path": str(output_path.resolve()),
+        "onnx_path": output_path.name,
         "model_family": model_family,
-        "preset_name": checkpoint.get("preset_name"),
+        "backbone_family": checkpoint.get("backbone_family"),
         "model_config": model_config,
-        "tokenizer_file_path": checkpoint.get("tokenizer_file_path"),
-        "tokenizer_repo_id": checkpoint.get("tokenizer_repo_id"),
-        "tokenizer_settings": checkpoint.get("tokenizer_settings"),
-        "inference_tokenizer_settings": checkpoint.get("inference_tokenizer_settings"),
-        "instruction_settings": checkpoint.get("instruction_settings"),
-        "instruction_mode": checkpoint.get("instruction_mode"),
-        "reasoning_settings": checkpoint.get("reasoning_settings"),
-        "reasoning_mode": checkpoint.get("reasoning_mode"),
-        "chatbot_settings": checkpoint.get("chatbot_settings"),
+        "tokenizer_map": tokenizer_map,
         "export": {
             "batch_size": batch_size,
             "seq_len": seq_len,
@@ -253,13 +254,42 @@ def _write_metadata(
     )
 
 
+def _resolve_tokenizer_map(checkpoint: dict[str, Any]) -> dict[str, Any]:
+    tokenizer_map = checkpoint.get("tokenizer_map")
+    if isinstance(tokenizer_map, dict):
+        return tokenizer_map
+
+    tokenizer_map_path = checkpoint.get("tokenizer_map_path")
+    if tokenizer_map_path:
+        payload = json.loads(Path(str(tokenizer_map_path)).read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            return payload.get("tokenizer", payload)
+
+    raise ValueError(
+        "Protein checkpoint must contain `tokenizer_map` or `tokenizer_map_path` "
+        "so the ONNX API can tokenize prompts."
+    )
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, torch.device | torch.dtype):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def main() -> None:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
     args = _parse_args()
     checkpoint_path = Path(args.checkpoint).expanduser().resolve()
-    if not checkpoint_path.exists():
+    if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 
     _require_onnx_export_dependencies()
@@ -274,16 +304,16 @@ def main() -> None:
         seq_len=seq_len,
     )
     with torch.no_grad():
-        reference_output = wrapper(*example_inputs).detach().cpu().numpy()
+        reference_output = wrapper(*example_inputs).detach().cpu().float().numpy()
 
     output_path = (
         Path(args.output).expanduser().resolve()
         if args.output is not None
-        else _default_output_path(checkpoint_path)
+        else _default_output_path(checkpoint_path).resolve()
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    export_kwargs = {
+    export_kwargs: dict[str, Any] = {
         "input_names": input_names,
         "output_names": ["logits"],
         "opset_version": args.opset,
@@ -301,9 +331,8 @@ def main() -> None:
             **export_kwargs,
         )
 
-    verification: dict[str, Any]
     if args.skip_verify:
-        verification = {
+        verification: dict[str, Any] = {
             "verified": False,
             "verification_skipped": True,
             "reason": "skip_verify_flag",
