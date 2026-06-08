@@ -25,8 +25,15 @@ production = [
     "uvicorn[standard]>=0.30",
 ]
 structure = [
+    "celery>=5.4",
     "fastapi>=0.111",
     "runpod-flash",
+    "uvicorn[standard]>=0.30",
+]
+simulation = [
+    "celery>=5.4",
+    "fastapi>=0.111",
+    "openmm>=8.1",
     "uvicorn[standard]>=0.30",
 ]
 export = [

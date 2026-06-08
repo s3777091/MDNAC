@@ -10,6 +10,7 @@ API_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = API_ROOT / "config.structure.yaml"
 CONFIG_PATH_ENV_VAR = "MDNAC_STRUCTURE_CONFIG"
 ENVIRONMENT_ENV_VAR = "MDNAC_STRUCTURE_ENV"
+RABBITMQ_URL_ENV_VAR = "RABBITMQ_URL"
 
 
 @dataclass(frozen=True)
@@ -61,12 +62,24 @@ class OpenFoldSettings:
 
 
 @dataclass(frozen=True)
+class SimulationSettings:
+    jobs_root: Path
+    rabbitmq_url: str
+    queue_name: str
+    worker_prefetch_multiplier: int
+    task_acks_late: bool
+    task_reject_on_worker_lost: bool
+    task_track_started: bool
+
+
+@dataclass(frozen=True)
 class StructureAPISettings:
     environment: str
     config_path: Path
     server: ServerSettings
     runpod: RunpodSettings
     openfold: OpenFoldSettings
+    simulation: SimulationSettings
 
 
 def load_config(
@@ -108,6 +121,10 @@ def load_config(
         server=_load_server_settings(raw_environment),
         runpod=_load_runpod_settings(raw_environment),
         openfold=_load_openfold_settings(
+            raw_environment,
+            base_dir=resolved_config_path.parent,
+        ),
+        simulation=_load_simulation_settings(
             raw_environment,
             base_dir=resolved_config_path.parent,
         ),
@@ -226,6 +243,34 @@ def _load_openfold_settings(
             if value not in (None, "")
         },
         extra_args=tuple(str(item) for item in extra_args),
+    )
+
+
+def _load_simulation_settings(
+    raw_environment: dict[str, Any],
+    *,
+    base_dir: Path,
+) -> SimulationSettings:
+    raw_simulation = raw_environment.get("simulation") or {}
+    if not isinstance(raw_simulation, dict):
+        raise ValueError("Environment `simulation` must be a mapping.")
+
+    rabbitmq_url = (
+        os.environ.get(RABBITMQ_URL_ENV_VAR)
+        or raw_simulation.get("rabbitmq_url")
+        or "amqp://guest:guest@localhost:5672//"
+    )
+    return SimulationSettings(
+        jobs_root=_resolve_config_path(
+            str(raw_simulation.get("jobs_root") or "data/simulation_jobs"),
+            base_dir,
+        ),
+        rabbitmq_url=str(rabbitmq_url),
+        queue_name=str(raw_simulation.get("queue_name") or "protein_simulation_queue"),
+        worker_prefetch_multiplier=int(raw_simulation.get("worker_prefetch_multiplier") or 1),
+        task_acks_late=bool(raw_simulation.get("task_acks_late", True)),
+        task_reject_on_worker_lost=bool(raw_simulation.get("task_reject_on_worker_lost", True)),
+        task_track_started=bool(raw_simulation.get("task_track_started", True)),
     )
 
 

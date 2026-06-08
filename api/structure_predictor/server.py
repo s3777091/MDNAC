@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import argparse
 import os
+import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .config import CONFIG_PATH_ENV_VAR, ENVIRONMENT_ENV_VAR, load_config
 from .openfold import OpenFoldRunner, StructurePredictionRequest
+from .simulation.dispatcher import enqueue_local_simulation_job
+from .simulation.jobs import TASK_OPENMM_SIMULATION, SimulationJobStore
+from .simulation.runpod import submit_runpod_simulation_job
 
 
 def create_app(
@@ -34,11 +38,30 @@ def create_app(
         include_structure_text: bool | None = None
         job_id: str | None = None
 
+    class SimulationEnvironmentRequest(BaseModel):
+        solvent: str = "water"
+        temperature_k: float = Field(default=300.0, gt=0.0)
+        ph: float = Field(default=7.4, ge=0.0, le=14.0)
+        salt_m: float = Field(default=0.15, ge=0.0)
+        steps: int = Field(default=50_000, gt=0)
+        report_interval: int = Field(default=500, gt=0)
+        gpu_device: int = Field(default=0, ge=0)
+
+    class SimulationJobRequest(BaseModel):
+        structure_job_id: str | int
+        pdb_path: str | None = None
+        cif_path: str | None = None
+        run_target: Literal["local", "runpod"] = "local"
+        environment: SimulationEnvironmentRequest = Field(
+            default_factory=SimulationEnvironmentRequest
+        )
+
     app = FastAPI(
         title="MDNAC OpenFold Structure Predictor API",
         version="0.1.0",
     )
     app.state.settings = settings
+    app.state.simulation_jobs = SimulationJobStore(settings.simulation.jobs_root)
 
     def get_runner() -> OpenFoldRunner:
         cache_key = f"{settings.openfold.repo_path}|{settings.openfold.config_preset}"
@@ -70,8 +93,7 @@ def create_app(
             **readiness,
         }
 
-    @app.post("/predict-structure")
-    def predict_structure(request: PredictStructureRequest) -> dict[str, Any]:
+    def predict_structure(request) -> dict[str, Any]:
         payload = request.model_dump() if hasattr(request, "model_dump") else request.dict()
         try:
             result = get_runner().predict(StructurePredictionRequest(**payload))
@@ -79,7 +101,129 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return result.to_dict()
 
+    predict_structure.__annotations__["request"] = PredictStructureRequest
+    app.post("/predict-structure")(predict_structure)
+
+    def create_simulation_job(request) -> dict[str, Any]:
+        payload = request.model_dump() if hasattr(request, "model_dump") else request.dict()
+        payload = _validate_simulation_payload(payload, http_exception=HTTPException)
+        job_id = uuid.uuid4().hex
+        payload["job_id"] = job_id
+        payload["task"] = TASK_OPENMM_SIMULATION
+        run_target = str(payload["run_target"])
+
+        external_job_id = None
+        if run_target == "runpod":
+            external_job_id = submit_runpod_simulation_job(payload)
+
+        job_state = app.state.simulation_jobs.create_job(
+            job_id=job_id,
+            payload=payload,
+            run_target=run_target,
+            external_job_id=external_job_id,
+        )
+        if run_target == "local":
+            try:
+                enqueue_local_simulation_job(payload, settings=settings)
+            except Exception as exc:
+                app.state.simulation_jobs.update_job(
+                    job_id,
+                    status="failed",
+                    step="enqueue",
+                    error=str(exc),
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Failed to enqueue simulation job: {exc}",
+                ) from exc
+
+        response = {
+            "job_id": job_id,
+            "status": job_state["status"],
+            "task": TASK_OPENMM_SIMULATION,
+            "run_target": run_target,
+        }
+        if external_job_id:
+            response["external_job_id"] = external_job_id
+        return response
+
+    create_simulation_job.__annotations__["request"] = SimulationJobRequest
+    app.post("/api/v1/predict/simulation", include_in_schema=False)(create_simulation_job)
+    app.post("/predict/simulation")(create_simulation_job)
+
+    @app.get("/api/v1/predict/jobs/{job_id}", include_in_schema=False)
+    @app.get("/predict/jobs/{job_id}")
+    def get_simulation_job(job_id: str) -> dict[str, Any]:
+        job_state = _load_simulation_job_or_404(app.state.simulation_jobs, job_id, HTTPException)
+        response = {
+            "job_id": job_state["job_id"],
+            "task": job_state["task"],
+            "status": job_state["status"],
+            "step": job_state.get("step"),
+            "progress": job_state.get("progress"),
+            "error": job_state.get("error"),
+        }
+        if job_state.get("external_job_id"):
+            response["external_job_id"] = job_state["external_job_id"]
+        return response
+
+    @app.get("/api/v1/predict/jobs/{job_id}/result", include_in_schema=False)
+    @app.get("/predict/jobs/{job_id}/result")
+    def get_simulation_job_result(job_id: str) -> dict[str, Any]:
+        job_state = _load_simulation_job_or_404(app.state.simulation_jobs, job_id, HTTPException)
+        if job_state["status"] != "completed":
+            return {
+                "job_id": job_state["job_id"],
+                "status": job_state["status"],
+                "message": "Job is not completed yet",
+            }
+        return {
+            "job_id": job_state["job_id"],
+            "status": job_state["status"],
+            "task": job_state["task"],
+            "result": job_state.get("result"),
+        }
+
     return app
+
+
+def _validate_simulation_payload(payload: dict[str, Any], *, http_exception):
+    structure_job_id = str(payload.get("structure_job_id") or "").strip()
+    if not structure_job_id:
+        raise http_exception(status_code=400, detail="structure_job_id is required.")
+    payload["structure_job_id"] = structure_job_id
+
+    pdb_path = payload.get("pdb_path")
+    cif_path = payload.get("cif_path")
+    if not pdb_path and not cif_path:
+        raise http_exception(status_code=400, detail="Either pdb_path or cif_path is required.")
+    if not pdb_path and cif_path:
+        raise http_exception(
+            status_code=400,
+            detail="CIF simulation is not supported yet; please provide pdb_path.",
+        )
+
+    environment = payload.get("environment") or {}
+    if environment.get("solvent") != "water":
+        raise http_exception(
+            status_code=400,
+            detail="Only solvent='water' is supported for OpenMM simulation.",
+        )
+    if int(environment["report_interval"]) > int(environment["steps"]):
+        raise http_exception(
+            status_code=400,
+            detail="report_interval must be less than or equal to steps.",
+        )
+    return payload
+
+
+def _load_simulation_job_or_404(store: SimulationJobStore, job_id: str, http_exception):
+    try:
+        return store.get_job(job_id)
+    except FileNotFoundError as exc:
+        raise http_exception(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise http_exception(status_code=400, detail=str(exc)) from exc
 
 
 def main() -> None:

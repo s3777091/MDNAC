@@ -9,6 +9,7 @@ __all__ = [
     "OpenFoldPredictionResult",
     "OpenFoldRunner",
     "OpenFoldSettings",
+    "SimulationSettings",
     "StructureAPISettings",
     "StructurePredictionRequest",
     "build_openfold_command",
@@ -17,7 +18,7 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name in {"OpenFoldSettings", "StructureAPISettings", "load_config"}:
+    if name in {"OpenFoldSettings", "SimulationSettings", "StructureAPISettings", "load_config"}:
         module = import_module("structure_predictor.config")
         return getattr(module, name)
     if name in {

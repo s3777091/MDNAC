@@ -8,6 +8,14 @@ environments:
       reload: true
     runpod:
       enabled: false
+    simulation:
+      jobs_root: data/simulation_jobs
+      rabbitmq_url: amqp://guest:guest@127.0.0.1:5672//
+      queue_name: protein_simulation_queue
+      worker_prefetch_multiplier: 1
+      task_acks_late: true
+      task_reject_on_worker_lost: true
+      task_track_started: true
     openfold:
       repo_path: ../openfold
       python_executable: python
@@ -53,6 +61,15 @@ environments:
         - PyYAML
         - fastapi
         - uvicorn[standard]
+        - celery
+    simulation:
+      jobs_root: /runpod-volume/mdnac/simulation_jobs
+      rabbitmq_url: amqp://guest:guest@rabbitmq:5672//
+      queue_name: protein_simulation_queue
+      worker_prefetch_multiplier: 1
+      task_acks_late: true
+      task_reject_on_worker_lost: true
+      task_track_started: true
     openfold:
       repo_path: /opt/openfold
       python_executable: python

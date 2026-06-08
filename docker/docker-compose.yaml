@@ -1,39 +1,148 @@
 services:
-  minio:
-    image: minio/minio:latest
-    container_name: microbial-dna-minio
+  # minio:
+  #   image: minio/minio:latest
+  #   container_name: microbial-dna-minio
+  #   restart: unless-stopped
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+  #     MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+  #   command: server /data --console-address ":${MINIO_CONSOLE_PORT:-9003}"
+  #   ports:
+  #     - "${MINIO_API_PORT:-9002}:9000"
+  #     - "${MINIO_CONSOLE_PORT:-9003}:${MINIO_CONSOLE_PORT:-9003}"
+  #   volumes:
+  #     - minio_data:/data
+  #   healthcheck:
+  #     test: ["CMD", "mc", "ready", "local"]
+  #     interval: 5s
+  #     timeout: 5s
+  #     retries: 10
+
+  # minio-init:
+  #   image: minio/mc:latest
+  #   depends_on:
+  #     minio:
+  #       condition: service_healthy
+  #   env_file:
+  #     - .env
+  #   entrypoint:
+  #     - /bin/sh
+  #     - -c
+  #     - >
+  #       mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" &&
+  #       mc mb --ignore-existing local/"$${MICROBIAL_DATA_MINIO_BUCKET:-microbial-dna-compiler}"
+  #   restart: "no"
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: mdnac-rabbitmq
     restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
-    command: server /data --console-address ":${MINIO_CONSOLE_PORT:-9003}"
     ports:
-      - "${MINIO_API_PORT:-9002}:9000"
-      - "${MINIO_CONSOLE_PORT:-9003}:${MINIO_CONSOLE_PORT:-9003}"
+      - "${RABBITMQ_AMQP_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
-      - minio_data:/data
+      - rabbitmq_data:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
 
-  minio-init:
-    image: minio/mc:latest
-    depends_on:
-      minio:
-        condition: service_healthy
+  protein-api:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm
+    container_name: mdnac-protein-api
+    working_dir: /workspace/api
+    restart: unless-stopped
     env_file:
-      - .env
-    entrypoint:
-      - /bin/sh
-      - -c
-      - >
-        mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" &&
-        mc mb --ignore-existing local/"$${MICROBIAL_DATA_MINIO_BUCKET:-microbial-dna-compiler}"
-    restart: "no"
+      - ../.env
+    environment:
+      MDNAC_API_CONFIG: /workspace/api/config.yaml
+      MDNAC_API_ENV: ${MDNAC_API_ENV:-local}
+      PYTHONPATH: /workspace
+      UV_LINK_MODE: copy
+    command:
+      - uv
+      - run
+      - --extra
+      - local
+      - mdnac-api
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ..:/workspace
+
+  structure-api:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm
+    container_name: mdnac-structure-api
+    working_dir: /workspace/api
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      MDNAC_STRUCTURE_CONFIG: /workspace/api/config.structure.yaml
+      MDNAC_STRUCTURE_ENV: ${MDNAC_STRUCTURE_ENV:-local}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
+    command:
+      - uv
+      - run
+      - --extra
+      - structure
+      - mdnac-structure-api
+      - --host
+      - 0.0.0.0
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "${STRUCTURE_API_PORT:-8010}:8010"
+    volumes:
+      - ..:/workspace
+      - simulation_jobs:/workspace/api/data/simulation_jobs
+
+  protein-simulation-worker:
+    image: ghcr.io/astral-sh/uv:python3.11-bookworm
+    container_name: mdnac-protein-simulation-worker
+    working_dir: /workspace/api
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      MDNAC_STRUCTURE_CONFIG: /workspace/api/config.structure.yaml
+      MDNAC_STRUCTURE_ENV: ${MDNAC_STRUCTURE_ENV:-local}
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672//
+    command:
+      - uv
+      - run
+      - --extra
+      - simulation
+      - celery
+      - -A
+      - structure_predictor.simulation.tasks:celery_app
+      - worker
+      - --loglevel=info
+      - -Q
+      - protein_simulation_queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ..:/workspace
+      - simulation_jobs:/workspace/api/data/simulation_jobs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
 volumes:
   minio_data:
+  rabbitmq_data:
+  simulation_jobs:

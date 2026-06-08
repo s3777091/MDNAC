@@ -1,9 +1,7 @@
-from __future__ import annotations
-
 import argparse
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from .config import (
     APISettings,
@@ -13,6 +11,13 @@ from .config import (
     load_config,
 )
 from .inference import InferenceAPI
+from libs.protein_completion.masking import (
+    is_standard_amino_acid_text,
+    make_span_completion_example,
+)
+
+
+SPAN_COMPLETION_ROUTE = "/span-completion"
 
 
 def create_app(
@@ -20,14 +25,8 @@ def create_app(
     config_path: str | Path | None = None,
     environment: str | None = None,
 ):
-    try:
-        from fastapi import FastAPI, HTTPException
-        from pydantic import BaseModel, Field
-    except ImportError as exc:
-        raise RuntimeError(
-            "Serving the API requires FastAPI and Pydantic. "
-            "Install the api project with the local or production extra."
-        ) from exc
+    from fastapi import Body, FastAPI, HTTPException
+    from pydantic import BaseModel, Field
 
     settings = load_config(config_path=config_path, environment=environment)
     api_cache: dict[str, InferenceAPI] = {}
@@ -40,6 +39,16 @@ def create_app(
         seed: int | None = None
         stop_at_endoftext: bool | None = None
         ensure_protein_prompt: bool | None = None
+
+    class SpanCompletionRequest(BaseModel):
+        raw_input: str = Field(..., min_length=1)
+        source: Literal["ncbi", "ena"] = "ncbi"
+        limit: int = Field(default=1, gt=0)
+        mask_policy: str = "random_span"
+        mask_start: int = Field(default=0, ge=0)
+        mask_length: int = Field(default=48, gt=0)
+        left_flank_size: int = Field(default=64, ge=0)
+        right_flank_size: int = Field(default=64, ge=0)
 
     app = FastAPI(
         title="MDNAC Protein API",
@@ -88,6 +97,68 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return result.to_dict()
 
+    @app.post(SPAN_COMPLETION_ROUTE)
+    def span_completion(request: SpanCompletionRequest = Body(...)) -> dict[str, str]:
+        (
+            FetchRequest,
+            DataNotFoundError,
+            SourceConfigurationError,
+            NcbiSequenceSource,
+            EnaSequenceSource,
+        ) = _span_completion_data_dependencies()
+
+        try:
+            query = _build_source_query(request.raw_input, source_name=request.source)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        transport = _new_http_transport()
+        sequence_source = (
+            NcbiSequenceSource(transport=transport)
+            if request.source == "ncbi"
+            else EnaSequenceSource(transport=transport)
+        )
+        fetch_request = FetchRequest(
+            dataset_name="protein-span-completion",
+            query=query,
+            limit=request.limit,
+            extra_fields=("gene", "product", "host", "keywords"),
+        )
+        try:
+            records = sequence_source.fetch(fetch_request)
+        except DataNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except SourceConfigurationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"{request.source.upper()} source fetch failed: {exc}",
+            ) from exc
+
+        if not records:
+            raise HTTPException(status_code=404, detail="No sequence records found.")
+
+        mask_end = request.mask_start + request.mask_length
+        try:
+            record = _select_span_completion_record(records, mask_end=mask_end)
+            source_row = _build_span_source_row(record, raw_input=request.raw_input)
+            span_row = make_span_completion_example(
+                source_row,
+                source_index=0,
+                mask_start=request.mask_start,
+                mask_end=mask_end,
+                mask_policy=request.mask_policy,
+                left_flank_size=request.left_flank_size,
+                right_flank_size=request.right_flank_size,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        return {
+            "instruction": span_row["instruction"],
+            "input": span_row["input"],
+        }
+
     return app
 
 
@@ -103,12 +174,7 @@ def main() -> None:
     parser.add_argument("--reload", action="store_true", help="Enable uvicorn reload.")
     args = parser.parse_args()
 
-    try:
-        import uvicorn
-    except ImportError as exc:
-        raise RuntimeError(
-            "Running the local server requires uvicorn. Install the api local extra."
-        ) from exc
+    import uvicorn
 
     if args.config:
         os.environ[CONFIG_PATH_ENV_VAR] = str(Path(args.config).expanduser().resolve())
@@ -134,6 +200,98 @@ def _merge_generation_request(
         if request_payload.get(key) is not None:
             kwargs[key] = request_payload[key]
     return kwargs
+
+
+def _build_source_query(raw_input: str, *, source_name: str) -> str:
+    query = " ".join(raw_input.split())
+    if not query:
+        raise ValueError("raw_input must not be empty.")
+    if source_name == "ncbi" and "protein[filter]" not in query.lower():
+        return f"{query} AND protein[Filter]"
+    return query
+
+
+def _select_span_completion_record(
+    records: list[Any],
+    *,
+    mask_end: int,
+) -> Any:
+    sequenced_records = [
+        record for record in records if _compact_protein_sequence(record.sequence)
+    ]
+    if not sequenced_records:
+        raise ValueError("No fetched sequence record contains a protein sequence.")
+
+    long_enough_records = [
+        record
+        for record in sequenced_records
+        if len(_compact_protein_sequence(record.sequence)) > mask_end
+    ]
+    if not long_enough_records:
+        raise ValueError("No fetched sequence is long enough for the requested mask span.")
+
+    standard_records = [
+        record
+        for record in long_enough_records
+        if is_standard_amino_acid_text(_compact_protein_sequence(record.sequence))
+    ]
+    return (standard_records or long_enough_records)[0]
+
+
+def _build_span_source_row(record: Any, *, raw_input: str) -> dict[str, Any]:
+    return {
+        "instruction": build_instruction_from_record(record, raw_input),
+        "input": "",
+        "output": record.sequence,
+        "accession": record.accession,
+        "metadata": record.metadata,
+        "output_format": "single protein sequence",
+    }
+
+
+def build_instruction_from_record(record: Any, raw_input: str) -> str:
+    del raw_input
+    fields = [
+        ("description", record.description),
+        ("organism", record.organism),
+        ("keywords", _metadata_value(record.metadata, "keywords")),
+        ("gene", _metadata_value(record.metadata, "gene")),
+        ("product", _metadata_value(record.metadata, "product")),
+        ("host", _metadata_value(record.metadata, "host")),
+    ]
+    parts = ["task protein span completion", "labels protein sequence"]
+    parts.extend(f"{name} {value}" for name, value in fields if value)
+    return "; ".join(parts)
+
+
+def _metadata_value(metadata: dict[str, str], field_name: str) -> str:
+    value = str(metadata.get(field_name) or "").strip()
+    return " ".join(value.split())
+
+
+def _compact_protein_sequence(sequence: str) -> str:
+    return "".join(str(sequence or "").split()).upper()
+
+
+def _new_http_transport() -> Any:
+    from libs.data.utilities.http import UrllibHttpTransport
+
+    return UrllibHttpTransport()
+
+
+def _span_completion_data_dependencies() -> tuple[Any, ...]:
+    from libs.data.entities import FetchRequest
+    from libs.data.sources.ena import EnaSequenceSource
+    from libs.data.sources.ncbi import NcbiSequenceSource
+    from libs.data.utilities.exceptions import DataNotFoundError, SourceConfigurationError
+
+    return (
+        FetchRequest,
+        DataNotFoundError,
+        SourceConfigurationError,
+        NcbiSequenceSource,
+        EnaSequenceSource,
+    )
 
 
 __all__ = ["create_app", "main"]
