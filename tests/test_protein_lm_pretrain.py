@@ -299,7 +299,6 @@ class ProteinLMPretrainTests(unittest.TestCase):
             optimizers = create_muon_optimizers(
                 model,
                 adamw_learning_rate=1e-3,
-                muon_learning_rate=2e-3,
                 weight_decay=0.01,
             )
         finally:

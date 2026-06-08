@@ -69,9 +69,8 @@ class ProteinTrainingConfigTests(unittest.TestCase):
                 "  context_length: 64\n"
                 "  stride: 32\n"
                 "optimizer:\n"
-                "  type: muon\n"
+                "  type: adamw\n"
                 "  learning_rate: 0.001\n"
-                "  muon_learning_rate: 0.002\n"
                 "  weight_decay: 0.2\n"
                 "  fused: false\n"
                 "runtime:\n"
@@ -106,7 +105,7 @@ class ProteinTrainingConfigTests(unittest.TestCase):
             (self.root / "data/compiled/custom/tokenizer_map.json").resolve(),
             config["paths"]["tokenizer_map_path"],
         )
-        self.assertEqual("muon", config["optimizer"]["type"])
+        self.assertEqual("adamw", config["optimizer"]["type"])
         self.assertEqual((0, 1), config["runtime"]["data_parallel_device_ids"])
         self.assertFalse(config["data"]["pin_memory"])
         self.assertEqual(64, config["model"]["context_length"])
@@ -144,7 +143,42 @@ class ProteinTrainingConfigTests(unittest.TestCase):
         self.assertEqual("protein/root", data_config.minio.root_prefix)
         self.assertFalse(data_config.minio.secure)
 
-    def test_creates_muon_optimizer_and_reapplies_yaml_hyperparameters(self) -> None:
+    def test_creates_adamw_optimizer_and_reapplies_yaml_hyperparameters(self) -> None:
+        config = load_protein_training_config(self.root)
+        model = torch.nn.Sequential(
+            torch.nn.Embedding(8, 4),
+            torch.nn.Linear(4, 4),
+        )
+
+        optimizer = create_protein_training_optimizer(
+            model,
+            config["optimizer"],
+            device="cpu",
+        )
+
+        self.assertEqual(["AdamW"], describe_protein_training_optimizers(optimizer))
+        for group in optimizer.param_groups:
+            group["lr"] = 99.0
+            group["weight_decay"] = 0.0
+
+        apply_protein_training_optimizer_settings(optimizer, config["optimizer"])
+
+        self.assertEqual(0.001, optimizer.param_groups[0]["lr"])
+        self.assertEqual(0.2, optimizer.param_groups[0]["weight_decay"])
+
+    def test_explicit_muon_optimizer_remains_available_for_legacy_configs(self) -> None:
+        (self.root / "train.yaml").write_text(
+            (
+                "model:\n"
+                "  context_length: 64\n"
+                "  stride: 32\n"
+                "optimizer:\n"
+                "  type: muon\n"
+                "  learning_rate: 0.001\n"
+                "  weight_decay: 0.2\n"
+            ),
+            encoding="utf-8",
+        )
         config = load_protein_training_config(self.root)
         model = torch.nn.Sequential(
             torch.nn.Embedding(8, 4),
@@ -175,12 +209,12 @@ class ProteinTrainingConfigTests(unittest.TestCase):
 
         apply_protein_training_optimizer_settings(optimizer, config["optimizer"])
 
-        self.assertEqual(0.002, optimizer[0].param_groups[0]["lr"])
+        self.assertEqual(0.001, optimizer[0].param_groups[0]["lr"])
         self.assertEqual(0.001, optimizer[1].param_groups[0]["lr"])
         self.assertEqual(0.2, optimizer[0].param_groups[0]["weight_decay"])
         self.assertEqual(0.2, optimizer[1].param_groups[0]["weight_decay"])
 
-    def test_default_optimizer_is_muon_when_type_missing(self) -> None:
+    def test_default_optimizer_is_adamw_when_type_missing(self) -> None:
         (self.root / "train.yaml").write_text(
             (
                 "model:\n"
@@ -193,7 +227,7 @@ class ProteinTrainingConfigTests(unittest.TestCase):
             encoding="utf-8",
         )
         config = load_protein_training_config(self.root)
-        self.assertEqual("muon", config["optimizer"]["type"])
+        self.assertEqual("adamw", config["optimizer"]["type"])
 
     def test_explicit_adamw_still_works(self) -> None:
         (self.root / "train.yaml").write_text(

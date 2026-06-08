@@ -22,7 +22,7 @@ data:
   split_seed: 42
   batch_size: 8
   num_workers: 4
-  pin_memory: true
+  pin_memory: auto
   shuffle_parts: true
   shuffle_examples: true
   shuffle_buffer_size: 4096
@@ -58,9 +58,8 @@ training:
   save_final: true
 
 optimizer:
-  type: muon
+  type: adamw
   learning_rate: 0.00005
-  muon_learning_rate: 0.00005
   weight_decay: 0.1
   fused: auto
 

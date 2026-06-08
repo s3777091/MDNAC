@@ -879,7 +879,6 @@ class ProteinPretrainTrainer:
                 optimizer_info={
                     "type": self._optimizer_cfg["type"],
                     "learning_rate": self._optimizer_cfg["learning_rate"],
-                    "muon_learning_rate": self._optimizer_cfg.get("muon_learning_rate"),
                     "weight_decay": self._optimizer_cfg["weight_decay"],
                 },
                 runtime_info={

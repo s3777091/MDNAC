@@ -6,6 +6,8 @@
 - `train.resume.yaml`: resume protein pretraining from a checkpoint.
 - `instruction.16gb.yaml`: stage-3 instruction tuning config.
 
+AdamW is the default optimizer in these configs. Use `notebooks/hyperparameter_tuning/01_optuna_adamw_pretrain_and_completion.ipynb` to run short Optuna proxy searches for pretrain and protein-completion hyperparameters.
+
 Notebook platform differences are handled by `libs/notebook_runtime.py`; keep config files workload-specific, not OS-specific.
 
 Notebook override environment variables:

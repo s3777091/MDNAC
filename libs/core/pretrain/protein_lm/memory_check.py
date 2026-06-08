@@ -315,7 +315,6 @@ def _write_recommended_yaml(
         "optimizer": {
             "type": config["optimizer"]["type"],
             "learning_rate": config["optimizer"]["learning_rate"],
-            "muon_learning_rate": config["optimizer"].get("muon_learning_rate"),
             "weight_decay": config["optimizer"]["weight_decay"],
             "fused": "auto",
         },

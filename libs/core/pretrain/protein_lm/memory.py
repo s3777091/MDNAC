@@ -66,7 +66,7 @@ def estimate_protein_pretrain_memory(
     tokenizer: SequenceTokenizer,
     batch_size: int,
     context_length: int,
-    optimizer_type: str = "muon",
+    optimizer_type: str = "adamw",
     dtype: torch.dtype = torch.float32,
     mixed_precision: str = "no",
     include_optimizer_state: bool = True,

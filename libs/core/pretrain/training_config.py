@@ -186,13 +186,7 @@ def load_protein_training_config(
                 True,
             ),
         },
-        "optimizer": {
-            "type": _normalize_optimizer_type(_nested_get(config_mapping, "optimizer", "type") or "muon"),
-            "learning_rate": float(_nested_get(config_mapping, "optimizer", "learning_rate") or 3e-4),
-            "muon_learning_rate": _optional_float(_nested_get(config_mapping, "optimizer", "muon_learning_rate")),
-            "weight_decay": float(_nested_get(config_mapping, "optimizer", "weight_decay") or 0.1),
-            "fused": fused_adamw,
-        },
+        "optimizer": _resolve_optimizer_config(config_mapping, fused_adamw),
         "runtime": {
             "device": _normalize_device(_nested_get(config_mapping, "runtime", "device") or "auto"),
             "multi_gpu_mode": str(_nested_get(config_mapping, "runtime", "multi_gpu_mode") or "auto"),
@@ -312,7 +306,7 @@ def create_protein_training_optimizer(
     *,
     device: torch.device | str,
 ) -> torch.optim.Optimizer | list[torch.optim.Optimizer]:
-    optimizer_type = _normalize_optimizer_type(optimizer_config.get("type") or "muon")
+    optimizer_type = _normalize_optimizer_type(optimizer_config.get("type") or "adamw")
     learning_rate = float(optimizer_config.get("learning_rate") or 3e-4)
     weight_decay = float(optimizer_config.get("weight_decay") or 0.1)
 
@@ -320,7 +314,6 @@ def create_protein_training_optimizer(
         return create_muon_optimizers(
             model,
             adamw_learning_rate=learning_rate,
-            muon_learning_rate=_optional_float(optimizer_config.get("muon_learning_rate")),
             weight_decay=weight_decay,
         )
 
@@ -340,15 +333,11 @@ def apply_protein_training_optimizer_settings(
     optimizer: torch.optim.Optimizer | Sequence[torch.optim.Optimizer],
     optimizer_config: Mapping[str, Any],
 ) -> None:
-    optimizer_type = _normalize_optimizer_type(optimizer_config.get("type") or "muon")
     adamw_learning_rate = float(optimizer_config.get("learning_rate") or 3e-4)
-    muon_learning_rate = _optional_float(optimizer_config.get("muon_learning_rate"), default=adamw_learning_rate)
     weight_decay = float(optimizer_config.get("weight_decay") or 0.1)
 
     for opt in _optimizer_sequence(optimizer):
         resolved_learning_rate = adamw_learning_rate
-        if optimizer_type == "muon" and not isinstance(opt, torch.optim.AdamW):
-            resolved_learning_rate = float(muon_learning_rate)
         for group in opt.param_groups:
             group["lr"] = resolved_learning_rate
             if "weight_decay" in group:
@@ -456,6 +445,17 @@ def _optional_string(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _resolve_optimizer_config(config_mapping: Mapping[str, Any], fused_adamw: bool) -> dict[str, Any]:
+    optimizer_type = _normalize_optimizer_type(_nested_get(config_mapping, "optimizer", "type") or "adamw")
+    optimizer_config: dict[str, Any] = {
+        "type": optimizer_type,
+        "learning_rate": float(_nested_get(config_mapping, "optimizer", "learning_rate") or 3e-4),
+        "weight_decay": float(_nested_get(config_mapping, "optimizer", "weight_decay") or 0.1),
+        "fused": fused_adamw,
+    }
+    return optimizer_config
 
 
 def _resolve_auto_bool(value: Any, *, default: bool) -> bool:

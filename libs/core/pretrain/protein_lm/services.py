@@ -484,7 +484,6 @@ class CheckpointService:
                 "context_length": int(model_config.context_length),
                 "stride": self._model_cfg["stride"],
                 "learning_rate": self._optimizer_cfg["learning_rate"],
-                "muon_learning_rate": self._optimizer_cfg.get("muon_learning_rate"),
                 "weight_decay": self._optimizer_cfg["weight_decay"],
                 "optimizer_type": self._optimizer_cfg["type"],
                 "optimizer_types": describe_protein_training_optimizers(optimizer),

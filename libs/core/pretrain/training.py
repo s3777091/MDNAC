@@ -31,7 +31,6 @@ def create_muon_optimizers(
     model: torch.nn.Module,
     *,
     adamw_learning_rate: float,
-    muon_learning_rate: float | None = None,
     weight_decay: float = 0.1,
 ) -> list[torch.optim.Optimizer]:
     muon_cls = getattr(torch.optim, "Muon", None)
@@ -63,7 +62,7 @@ def create_muon_optimizers(
         optimizers.append(
             muon_cls(
                 muon_params,
-                lr=float(muon_learning_rate if muon_learning_rate is not None else adamw_learning_rate),
+                lr=adamw_learning_rate,
                 weight_decay=weight_decay,
                 adjust_lr_fn="match_rms_adamw",
             )
@@ -79,13 +78,11 @@ def create_moon_optimizers(
     model: torch.nn.Module,
     *,
     adamw_learning_rate: float,
-    muon_learning_rate: float | None = None,
     weight_decay: float = 0.1,
 ) -> list[torch.optim.Optimizer]:
     return create_muon_optimizers(
         model,
         adamw_learning_rate=adamw_learning_rate,
-        muon_learning_rate=muon_learning_rate,
         weight_decay=weight_decay,
     )
 

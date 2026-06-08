@@ -195,7 +195,8 @@ In notebooks, use the default config after a normal clone, or set `MDNAC_TRAIN_C
 
 ### Key Features
 
-- **Muon optimizer** is the default (`optimizer.type: muon`). Only use AdamW when explicitly set.
+- **AdamW optimizer** is the default (`optimizer.type: adamw`) for pretraining and protein-completion tuning.
+- **Optuna search** is available in `notebooks/hyperparameter_tuning/01_optuna_adamw_pretrain_and_completion.ipynb` to tune AdamW-centered hyperparameters before longer runs.
 - **MinIO streaming** downloads parts on demand (one at a time), not the full dataset upfront.
 - **`resume_state.json`** tracks progress (epoch, step, tokens, completed parts) for resumable runs.
 - **`metrics_history.jsonl`** appends eval metrics at each checkpoint.
@@ -203,7 +204,7 @@ In notebooks, use the default config after a normal clone, or set `MDNAC_TRAIN_C
 
 All training logic lives in `libs.core.pretrain.protein_lm.trainer.ProteinPretrainTrainer`, which reuses existing helpers from `libs.core`.
 
-The pretrain notebook loads shared paths, model settings, optimizer choice (`muon` default), multi-GPU options, and optional MinIO overrides from the active training YAML. Keep sensitive MinIO credentials in `.env` or environment variables and only put non-secret endpoint or bucket overrides in training YAML files when needed.
+The pretrain notebook loads shared paths, model settings, optimizer choice (`adamw` default), multi-GPU options, and optional MinIO overrides from the active training YAML. Keep sensitive MinIO credentials in `.env` or environment variables and only put non-secret endpoint or bucket overrides in training YAML files when needed.
 
 The notebooks call `libs.core` helpers to build or load the protein `SequenceTokenizer`, create causal-LM batches from `train.txt`, instantiate ProGen backbone configs for the MDC decoder, save/load resumable `progen_protein_lm` checkpoints, and benchmark protein next-token accuracy.
 

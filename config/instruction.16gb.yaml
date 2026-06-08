@@ -47,9 +47,8 @@ training:
   train_on_prompt: false
   include_separator_in_loss: false
 optimizer:
-  type: muon
+  type: adamw
   learning_rate: 0.00005
-  muon_learning_rate: 0.00005
   weight_decay: 0.1
   fused: auto
 runtime:

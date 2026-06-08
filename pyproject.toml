@@ -13,8 +13,9 @@ dependencies = [
     "huggingface_hub>=0.20",
     "matplotlib>=3.8",
     "numpy>=1.26",
+    "optuna>=4.0",
     "PyYAML>=6.0",
-    "torch>=2.11",
+    "torch>=2.11,<2.12",
     "protobuf>=4.25",
     "tiktoken>=0.7",
 ]
@@ -53,3 +54,11 @@ extend-exclude = [
     "LLMs-from-scratch",
     "notebooks",
 ]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu130", marker = "sys_platform == 'win32'" }
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true

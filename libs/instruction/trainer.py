@@ -98,9 +98,8 @@ class InstructionTrainingConfig:
     save_best: bool = True
     save_final: bool = True
     grad_clip_norm: float | None = 1.0
-    optimizer_type: str = "muon"
+    optimizer_type: str = "adamw"
     learning_rate: float = 2e-4
-    muon_learning_rate: float | None = None
     weight_decay: float = 0.1
     fused: bool | str = "auto"
     device: str = "auto"
@@ -287,10 +286,9 @@ def build_instruction_training_config(
             default=1.0,
         ),
         optimizer_type=_normalize_optimizer_type(
-            _config_value(config_mapping, ("optimizer", "type")) or "muon"
+            _config_value(config_mapping, ("optimizer", "type")) or "adamw"
         ),
         learning_rate=float(_config_value(config_mapping, ("optimizer", "learning_rate")) or 2e-4),
-        muon_learning_rate=_optional_float(_config_value(config_mapping, ("optimizer", "muon_learning_rate"))),
         weight_decay=float(_config_value(config_mapping, ("optimizer", "weight_decay")) or 0.1),
         fused=_resolve_auto_bool(
             _config_value(config_mapping, ("optimizer", "fused")),
@@ -700,7 +698,6 @@ class InstructionTrainer:
         optimizer_config = {
             "type": self.config.optimizer_type,
             "learning_rate": self.config.learning_rate,
-            "muon_learning_rate": self.config.muon_learning_rate,
             "weight_decay": self.config.weight_decay,
             "fused": self.config.fused,
         }
@@ -1053,7 +1050,6 @@ class InstructionTrainer:
             "train_perplexity": _json_perplexity(train_loss),
             "val_perplexity": _json_perplexity(val_loss),
             "learning_rate": self.config.learning_rate,
-            "muon_learning_rate": self.config.muon_learning_rate,
             "best_val_loss": None if math.isinf(self._best_val_loss) else self._best_val_loss,
             "checkpoint_last_path": str(self.checkpoint_last_path),
             "checkpoint_best_path": str(self.checkpoint_best_path),

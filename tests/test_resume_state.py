@@ -32,7 +32,7 @@ class ResumeStateTests(unittest.TestCase):
             best_checkpoint_path="data/ckpt/best.pt",
             final_checkpoint_path="data/ckpt/final.pt",
             model_info={"progen_model_size": "0.8B", "context_length": 512, "stride": 256},
-            optimizer_info={"type": "muon", "learning_rate": 3e-4},
+            optimizer_info={"type": "adamw", "learning_rate": 3e-4},
             runtime_info={"device": "cpu", "distributed": False, "rank": 0, "world_size": 1},
         )
         self.assertEqual("train_from_scratch", state["mode"])
