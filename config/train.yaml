@@ -53,7 +53,7 @@ training:
   eval_freq: 200
   eval_batches: 20
   grad_clip_norm: 1.0
-  save_last: true
+  save_last: false
   save_best: true
   save_final: true
 
@@ -74,8 +74,8 @@ runtime:
   use_fp32_fallback_linear_attention: true
 
 resume:
-  checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_last.pt
-  output_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_last.pt
+  checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
+  output_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
   best_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
   final_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_final.pt
   restore_optimizer_state: true

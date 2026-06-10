@@ -867,7 +867,7 @@ class ProteinPretrainTrainer:
                 mode=mode,
                 config_path=str(self.config["config_path"]),
                 training_config_snapshot_path=str(self._paths.get("training_config_snapshot_path", "")),
-                checkpoint_path=str(self._resume_cfg["output_checkpoint_path"]),
+                checkpoint_path=str(self._resume_cfg["best_checkpoint_path"]),
                 best_checkpoint_path=str(self._resume_cfg["best_checkpoint_path"]),
                 final_checkpoint_path=str(self._resume_cfg["final_checkpoint_path"]),
                 model_info={
@@ -979,10 +979,11 @@ class ProteinPretrainTrainer:
         final_train = self._train_losses[-1] if self._train_losses else None
         final_val = self._val_losses[-1] if self._val_losses else None
         best = None if math.isinf(self._best_val_loss) else self._best_val_loss
+        best_checkpoint_path = self._resume_cfg["best_checkpoint_path"]
         resume_state_path = self._paths.get("resume_state_path") or self._resume_cfg.get("resume_state_path")
         return ProteinPretrainResult(
-            checkpoint_path=self._resume_cfg["output_checkpoint_path"],
-            best_checkpoint_path=self._resume_cfg["best_checkpoint_path"] if best is not None else None,
+            checkpoint_path=best_checkpoint_path,
+            best_checkpoint_path=best_checkpoint_path,
             final_checkpoint_path=self._resume_cfg["final_checkpoint_path"],
             resume_state_path=Path(resume_state_path) if resume_state_path else None,
             global_step=self._global_step,

@@ -125,6 +125,12 @@ class TrainingLoopSettings:
     @classmethod
     def from_config(cls, training_cfg: ConfigSection) -> "TrainingLoopSettings":
         eval_freq = int(training_cfg["eval_freq"])
+        save_last = bool(training_cfg.get("save_last", False))
+        if save_last:
+            raise ValueError("training.save_last must be false; use checkpoint_best.pt as the model artifact")
+        save_best = bool(training_cfg.get("save_best", True))
+        if not save_best:
+            raise ValueError("training.save_best must be true so checkpoint_best.pt is available")
         return cls(
             num_epochs=int(training_cfg["num_epochs"]),
             max_steps=training_cfg.get("max_steps"),
@@ -132,8 +138,8 @@ class TrainingLoopSettings:
             eval_batches=int(training_cfg["eval_batches"]),
             grad_clip_norm=training_cfg["grad_clip_norm"],
             save_every_steps=training_cfg.get("save_every_steps"),
-            save_best=bool(training_cfg.get("save_best", True)),
-            save_last=bool(training_cfg.get("save_last", True)),
+            save_best=save_best,
+            save_last=save_last,
             save_final=bool(training_cfg.get("save_final", True)),
             gradient_accumulation_steps=int(training_cfg.get("gradient_accumulation_steps", 1)),
             log_every_steps=max(1, eval_freq // 2) if eval_freq > 0 else 50,

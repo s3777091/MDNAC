@@ -53,7 +53,7 @@ training:
   eval_freq: 20
   eval_batches: 64
   grad_clip_norm: 1.0
-  save_last: true
+  save_last: false
   save_best: true
   save_final: true
 
@@ -75,7 +75,7 @@ runtime:
 
 resume:
   checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
-  output_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_last.pt
+  output_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
   best_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
   final_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_final.pt
   restore_optimizer_state: true

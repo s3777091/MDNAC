@@ -28,7 +28,7 @@ class ResumeStateTests(unittest.TestCase):
             mode="train_from_scratch",
             config_path="train.yaml",
             training_config_snapshot_path="data/ckpt/snapshot.json",
-            checkpoint_path="data/ckpt/last.pt",
+            checkpoint_path="data/ckpt/best.pt",
             best_checkpoint_path="data/ckpt/best.pt",
             final_checkpoint_path="data/ckpt/final.pt",
             model_info={"progen_model_size": "0.8B", "context_length": 512, "stride": 256},

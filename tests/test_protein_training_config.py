@@ -310,7 +310,7 @@ class ProteinTrainingConfigTests(unittest.TestCase):
                 "training:\n"
                 "  max_steps: 500\n"
                 "  save_every_steps: 50\n"
-                "  save_last: true\n"
+                "  save_last: false\n"
                 "  save_best: true\n"
                 "  save_final: false\n"
             ),
@@ -319,7 +319,7 @@ class ProteinTrainingConfigTests(unittest.TestCase):
         config = load_protein_training_config(self.root)
         self.assertEqual(500, config["training"]["max_steps"])
         self.assertEqual(50, config["training"]["save_every_steps"])
-        self.assertTrue(config["training"]["save_last"])
+        self.assertFalse(config["training"]["save_last"])
         self.assertTrue(config["training"]["save_best"])
         self.assertFalse(config["training"]["save_final"])
 

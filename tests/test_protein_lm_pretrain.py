@@ -148,7 +148,7 @@ class ProteinLMPretrainTests(unittest.TestCase):
         self.assertTrue(torch.isfinite(loss.detach()))
 
         checkpoint_path = save_protein_pretrain_checkpoint(
-            self.root / "checkpoint_last.pt",
+            self.root / "checkpoint_best.pt",
             model=model,
             optimizer=optimizer,
             model_config=model_config,
@@ -204,7 +204,7 @@ class ProteinLMPretrainTests(unittest.TestCase):
         protein_embedding = protein_model.tok_emb.weight.detach().clone()
         protein_head = protein_model.out_head.weight.detach().clone()
         checkpoint_path = save_protein_pretrain_checkpoint(
-            self.root / "checkpoint_profile_seed.pt",
+            self.root / "checkpoint_best.pt",
             model=protein_model,
             optimizer=None,
             model_config=model_config,

@@ -94,7 +94,7 @@ class InstructionTrainingConfig:
     eval_batches: int = 16
     log_every_steps: int | None = None
     save_every_steps: int | None = 100
-    save_last: bool = True
+    save_last: bool = False
     save_best: bool = True
     save_final: bool = True
     grad_clip_norm: float | None = 1.0
@@ -172,10 +172,8 @@ def build_instruction_training_config(
         or Path("data/checkpoints/protein_from_scratch/checkpoint_best.pt"),
         project_root=resolved_project_root,
     )
-    if not base_checkpoint_path.exists() and base_checkpoint_path.name == "checkpoint_best.pt":
-        fallback_checkpoint_path = base_checkpoint_path.with_name("checkpoint_last.pt")
-        if fallback_checkpoint_path.exists():
-            base_checkpoint_path = fallback_checkpoint_path
+    if base_checkpoint_path.name != "checkpoint_best.pt":
+        raise ValueError("paths.base_checkpoint_path must point to checkpoint_best.pt")
 
     output_dir = _as_project_path(
         _config_value(config_mapping, ("paths", "checkpoint_dir"), ("paths", "output_dir"))
@@ -278,7 +276,7 @@ def build_instruction_training_config(
             _config_value(config_mapping, ("training", "save_every_steps")),
             default=100,
         ),
-        save_last=_bool_value(_config_value(config_mapping, ("training", "save_last")), True),
+        save_last=_bool_value(_config_value(config_mapping, ("training", "save_last")), False),
         save_best=_bool_value(_config_value(config_mapping, ("training", "save_best")), True),
         save_final=_bool_value(_config_value(config_mapping, ("training", "save_final")), True),
         grad_clip_norm=_optional_float(
@@ -406,6 +404,10 @@ class InstructionTrainingResult:
 class InstructionTrainer:
     def __init__(self, config: InstructionTrainingConfig) -> None:
         self.config = config
+        if config.save_last:
+            raise ValueError("save_last must be false; use checkpoint_best.pt as the model artifact")
+        if not config.save_best:
+            raise ValueError("save_best must be true so checkpoint_best.pt is available")
         self.output_dir = Path(config.output_dir).expanduser().resolve()
         self.artifact_dir = (
             self.output_dir / "profile_sequence_artifacts"
@@ -413,6 +415,8 @@ class InstructionTrainer:
             else Path(config.artifact_dir).expanduser().resolve()
         )
         self.base_checkpoint_path = Path(config.base_checkpoint_path).expanduser().resolve()
+        if self.base_checkpoint_path.name != "checkpoint_best.pt":
+            raise ValueError("base_checkpoint_path must point to checkpoint_best.pt")
         self.instruction_paths = resolve_instruction_paths(config.instruction_jsonl)
         self.checkpoint_last_path = self.output_dir / "checkpoint_last.pt"
         self.checkpoint_best_path = self.output_dir / "checkpoint_best.pt"
@@ -713,13 +717,13 @@ class InstructionTrainer:
         if not self.config.resume_if_available:
             self._log("⏭️  Resume disabled; starting from base checkpoint.")
             return
-        if not self.checkpoint_last_path.exists():
-            self._log(f"🆕 No instruction resume checkpoint found: {self.checkpoint_last_path}")
+        if not self.checkpoint_best_path.exists():
+            self._log(f"🆕 No instruction best resume checkpoint found: {self.checkpoint_best_path}")
             return
-        self._log(f"📥 Loading instruction resume checkpoint: {self.checkpoint_last_path}")
-        checkpoint = torch.load(self.checkpoint_last_path, map_location=self.runtime.device)
+        self._log(f"📥 Loading instruction best resume checkpoint: {self.checkpoint_best_path}")
+        checkpoint = torch.load(self.checkpoint_best_path, map_location=self.runtime.device)
         if not self._is_instruction_checkpoint(checkpoint):
-            raise ValueError(f"Resume checkpoint is not an instruction checkpoint: {self.checkpoint_last_path}")
+            raise ValueError(f"Resume checkpoint is not an instruction checkpoint: {self.checkpoint_best_path}")
 
         unwrap_mdc_training_model(self.model).load_state_dict(
             _normalize_app_state_dict(checkpoint["model_state_dict"]),

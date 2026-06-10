@@ -232,7 +232,7 @@ class TrainingRuntimeTests(unittest.TestCase):
         optimizer = torch.optim.AdamW(wrapped_model.parameters(), lr=1e-3)
 
         checkpoint_path = save_protein_pretrain_checkpoint(
-            self.root / "checkpoint_parallel.pt",
+            self.root / "checkpoint_best.pt",
             model=wrapped_model,
             optimizer=optimizer,
             model_config=model_config,

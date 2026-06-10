@@ -175,7 +175,7 @@ def load_protein_training_config(
             "eval_batches": int(_nested_get(config_mapping, "training", "eval_batches") or 10),
             "save_last": _bool_value(
                 _nested_get(config_mapping, "training", "save_last"),
-                True,
+                False,
             ),
             "save_best": _bool_value(
                 _nested_get(config_mapping, "training", "save_best"),
@@ -216,12 +216,12 @@ def load_protein_training_config(
         "resume": {
             "checkpoint_path": _as_project_path(
                 _nested_get(config_mapping, "resume", "checkpoint_path")
-                or checkpoint_dir / "checkpoint_last.pt",
+                or checkpoint_dir / "checkpoint_best.pt",
                 project_root=resolved_project_root,
             ),
             "output_checkpoint_path": _as_project_path(
                 _nested_get(config_mapping, "resume", "output_checkpoint_path")
-                or checkpoint_dir / "checkpoint_last.pt",
+                or checkpoint_dir / "checkpoint_best.pt",
                 project_root=resolved_project_root,
             ),
             "best_checkpoint_path": _as_project_path(
@@ -557,6 +557,10 @@ def _validate_config(training_config: Mapping[str, Any]) -> None:
         raise ValueError("training.num_epochs must be greater than 0")
     if int(training_settings.get("eval_batches", 0)) <= 0:
         raise ValueError("training.eval_batches must be greater than 0")
+    if _bool_value(training_settings.get("save_last"), False):
+        raise ValueError("training.save_last must be false; use checkpoint_best.pt as the model artifact")
+    if not _bool_value(training_settings.get("save_best"), True):
+        raise ValueError("training.save_best must be true so checkpoint_best.pt is available")
 
     if float(optimizer_config.get("learning_rate", 0.0)) <= 0:
         raise ValueError("optimizer.learning_rate must be greater than 0")
@@ -569,3 +573,5 @@ def _validate_config(training_config: Mapping[str, Any]) -> None:
     checkpoint_path = Path(resume_config.get("checkpoint_path"))
     if checkpoint_path.name == "":
         raise ValueError("resume.checkpoint_path must point to a checkpoint file")
+    if checkpoint_path.name != "checkpoint_best.pt":
+        raise ValueError("resume.checkpoint_path must point to checkpoint_best.pt")

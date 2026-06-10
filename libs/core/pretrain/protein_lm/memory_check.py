@@ -308,7 +308,7 @@ def _write_recommended_yaml(
             "eval_freq": config["training"]["eval_freq"],
             "eval_batches": min(config["training"]["eval_batches"], 10),
             "grad_clip_norm": config["training"]["grad_clip_norm"],
-            "save_last": True,
+            "save_last": False,
             "save_best": True,
             "save_final": True,
         },

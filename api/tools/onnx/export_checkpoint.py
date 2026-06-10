@@ -38,7 +38,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint",
         required=True,
-        help="Path to a protein training checkpoint such as checkpoint_best.pt or checkpoint_last.pt.",
+        help="Path to the best protein training checkpoint, normally checkpoint_best.pt.",
     )
     parser.add_argument(
         "--output",
@@ -84,7 +84,7 @@ def _parse_args() -> argparse.Namespace:
 
 def _default_output_path(checkpoint_path: Path) -> Path:
     stem = checkpoint_path.stem
-    if stem in {"checkpoint_best", "checkpoint_last"} and checkpoint_path.parent.name:
+    if stem == "checkpoint_best" and checkpoint_path.parent.name:
         stem = checkpoint_path.parent.name
     return API_ROOT / "data" / "model" / f"{stem}.onnx"
 
@@ -289,6 +289,8 @@ def main() -> None:
 
     args = _parse_args()
     checkpoint_path = Path(args.checkpoint).expanduser().resolve()
+    if checkpoint_path.name != "checkpoint_best.pt":
+        raise ValueError(f"ONNX export must use checkpoint_best.pt, got: {checkpoint_path}")
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
 

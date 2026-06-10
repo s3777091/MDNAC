@@ -581,7 +581,10 @@ def load_protein_pretrain_checkpoint(
     map_location: torch.device | str = "cpu",
     strict: bool = True,
 ) -> dict[str, Any]:
-    checkpoint = torch.load(Path(path), map_location=map_location)
+    checkpoint_path = Path(path)
+    if checkpoint_path.name != "checkpoint_best.pt":
+        raise ValueError(f"Protein checkpoint loading must use checkpoint_best.pt, got: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=map_location)
     if not is_supported_protein_checkpoint_family(checkpoint.get("model_family")):
         raise ValueError(
             "Unsupported protein checkpoint family: "
@@ -603,7 +606,10 @@ def load_protein_pretrain_checkpoint_for_profile_tuning(
     map_location: torch.device | str = "cpu",
     strict_backbone: bool = True,
 ) -> dict[str, Any]:
-    checkpoint = torch.load(Path(path), map_location=map_location)
+    checkpoint_path = Path(path)
+    if checkpoint_path.name != "checkpoint_best.pt":
+        raise ValueError(f"Profile tuning must load checkpoint_best.pt, got: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=map_location)
     if not is_supported_protein_checkpoint_family(checkpoint.get("model_family")):
         raise ValueError(
             "Unsupported protein checkpoint family: "

@@ -38,7 +38,7 @@ class InstructionStreamingTests(unittest.TestCase):
         config = InstructionTrainingConfig(
             instruction_jsonl=tuple(sorted(part_dir.glob("instruction_part_*.jsonl"))),
             artifact_source_jsonl=self.root / "missing_instruction.jsonl",
-            base_checkpoint_path=self.root / "unused.pt",
+            base_checkpoint_path=self.root / "checkpoint_best.pt",
             output_dir=self.root / "checkpoints",
             artifact_dir=self.root / "artifacts",
             artifact_profile_sample_size=10,
@@ -75,7 +75,7 @@ class InstructionStreamingTests(unittest.TestCase):
         config = InstructionTrainingConfig(
             instruction_jsonl=tuple(sorted(part_dir.glob("instruction_part_*.jsonl"))),
             artifact_source_jsonl=self.root / "missing_instruction.jsonl",
-            base_checkpoint_path=self.root / "unused.pt",
+            base_checkpoint_path=self.root / "checkpoint_best.pt",
             output_dir=self.root / "checkpoints",
             artifact_dir=self.root / "artifacts",
             artifact_profile_sample_size=1,
