@@ -17,7 +17,7 @@ from libs.protein_completion.masking import (
 )
 
 
-SPAN_COMPLETION_ROUTE = "/span-completion"
+SPAN_COMPLETION_ROUTE = "/protein-span-completion/prompt"
 
 
 def create_app(
@@ -206,8 +206,8 @@ def _build_source_query(raw_input: str, *, source_name: str) -> str:
     query = " ".join(raw_input.split())
     if not query:
         raise ValueError("raw_input must not be empty.")
-    if source_name == "ncbi" and "protein[filter]" not in query.lower():
-        return f"{query} AND protein[Filter]"
+    if source_name == "ncbi":
+        return query
     return query
 
 

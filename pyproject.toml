@@ -21,6 +21,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+agent = [
+    "exa-py",
+    "fastapi",
+    "langchain-core",
+    "langgraph",
+    "openai",
+    "pydantic",
+    "PyYAML",
+    "uvicorn",
+]
 # CUDA fast-path kernels for libs.core.mdc.linear_attention. Keep optional:
 # CPU-only and some Windows setups can fail to build native CUDA extensions.
 cuda = [

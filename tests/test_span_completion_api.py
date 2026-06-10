@@ -46,12 +46,13 @@ class SpanCompletionAPITests(unittest.TestCase):
     def test_builds_span_prompt_from_ncbi_result_without_returning_output(self) -> None:
         from fastapi.testclient import TestClient
         from interfere.server import SPAN_COMPLETION_ROUTE, create_app
+        self.assertEqual("/protein-span-completion/prompt", SPAN_COMPLETION_ROUTE)
 
         raw_input = (
             "uncharacterized protein LOC111693495 Trichogramma pretiosum "
             "RefSeq host Alabama argillacea"
         )
-        query = f"{raw_input} AND protein[Filter]"
+        query = raw_input
         left = "MRPVASVNLFLKTR"
         missing_span = "ACDEFGHIKLMNPQRSTVWYACDEFGHIKLMNPQRSTVWYACDEFGHI"
         right = "ALHLYGSKEDFNRTLCLSFCALRRLQLYSIEDEIRKELSTFGSGNDTRLIDHVNKALKSCKNLL"
@@ -129,7 +130,7 @@ class SpanCompletionAPITests(unittest.TestCase):
             ):
                 client = TestClient(create_app(config_path=config_path, environment="local"))
                 response = client.post(
-                    SPAN_COMPLETION_ROUTE,
+                    "/protein-span-completion/prompt",
                     json={
                         "raw_input": raw_input,
                         "source": "ncbi",

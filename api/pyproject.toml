@@ -13,6 +13,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+agent = [
+    "exa-py",
+    "fastapi>=0.111",
+    "langchain-core",
+    "langgraph",
+    "openai",
+    "pydantic",
+    "PyYAML>=6.0",
+    "uvicorn[standard]>=0.30",
+]
 local = [
     "fastapi>=0.111",
     "onnxruntime>=1.18",
@@ -42,19 +52,27 @@ export = [
     "torch>=2.11",
 ]
 dev = [
+    "httpx>=0.28",
     "pytest>=8.0",
     "ruff>=0.4",
 ]
 
 [project.scripts]
-mdnac-api = "interfere.server:main"
+mdnac-ai-agent-api = "server:main"
+mdnac-api = "server:main"
 mdnac-export-onnx = "tools.onnx.export_checkpoint:main"
 mdnac-generate = "interfere.inference:main"
 mdnac-structure-api = "structure_predictor.server:main"
 mdnac-openfold-predict = "structure_predictor.openfold:main"
 
+[tool.setuptools]
+py-modules = ["server"]
+
 [tool.setuptools.packages.find]
-include = ["interfere*", "structure_predictor*", "tools*"]
+include = ["ai_agent*", "interfere*", "structure_predictor*", "tools*"]
+
+[tool.setuptools.package-data]
+ai_agent = ["config/*.yaml", "skills/*/SKILL.md"]
 
 [tool.setuptools.package-dir]
 "" = "."

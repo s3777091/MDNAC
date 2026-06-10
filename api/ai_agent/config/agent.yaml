@@ -1,0 +1,38 @@
+environment: local
+
+environments:
+  local:
+    openai:
+      model: gpt-4o-mini
+      api_key_env: OPENAI_API_KEY
+    exa:
+      api_key_env: EXA_API_KEY
+      search_type: neural
+      max_results: 5
+    agent:
+      require_human_approval: false
+      max_tool_calls: 2
+    prompts:
+      system_prompt_key: grounded_agent
+    server:
+      host: 127.0.0.1
+      port: 8010
+      reload: true
+
+  production:
+    openai:
+      model: gpt-4o-mini
+      api_key_env: OPENAI_API_KEY
+    exa:
+      api_key_env: EXA_API_KEY
+      search_type: neural
+      max_results: 5
+    agent:
+      require_human_approval: true
+      max_tool_calls: 2
+    prompts:
+      system_prompt_key: grounded_agent
+    server:
+      host: 0.0.0.0
+      port: 8010
+      reload: false

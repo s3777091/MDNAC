@@ -6,6 +6,7 @@ The workers are intentionally split so each GPU runtime stays easy to deploy and
 
 - [Sequence Completion API](docs/sequence-completion.md): ONNX model, `POST /generate`
 - [Structure Predictor API: OpenFold](docs/structure-predictor-openfold.md): OpenFold GPU worker, `POST /predict-structure`
+- AI Agent API: OpenAI-backed LangGraph agent, `POST /agent/run`
 
 Recommended pipeline:
 
@@ -19,3 +20,12 @@ Worker entrypoints:
 api/runpod_app.py            # Worker 1: sequence completion
 api/runpod_structure_app.py  # Worker 2: OpenFold structure predictor
 ```
+
+AI agent local run:
+
+```text
+uv run --extra agent mdnac-ai-agent-api --env local --host 0.0.0.0 --port 8020
+```
+
+Set `OPENAI_API_KEY` in `api/.env` before starting the agent. The agent is OpenAI-only for
+model generation.
