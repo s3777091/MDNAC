@@ -454,8 +454,25 @@ def _resolve_optimizer_config(config_mapping: Mapping[str, Any], fused_adamw: bo
         "learning_rate": float(_nested_get(config_mapping, "optimizer", "learning_rate") or 3e-4),
         "weight_decay": float(_nested_get(config_mapping, "optimizer", "weight_decay") or 0.1),
         "fused": fused_adamw,
+        "lr_scheduler": _normalize_lr_scheduler(_nested_get(config_mapping, "optimizer", "lr_scheduler")),
+        "warmup_steps": int(_nested_get(config_mapping, "optimizer", "warmup_steps") or 0),
+        "warmup_ratio": _optional_float(_nested_get(config_mapping, "optimizer", "warmup_ratio")),
+        "min_lr_ratio": _optional_float(
+            _nested_get(config_mapping, "optimizer", "min_lr_ratio"),
+            default=0.1,
+        ),
+        "lr_decay_steps": _optional_int(_nested_get(config_mapping, "optimizer", "lr_decay_steps")),
     }
     return optimizer_config
+
+
+def _normalize_lr_scheduler(value: Any) -> str:
+    if value is None:
+        return "none"
+    normalized = str(value).strip().lower()
+    if normalized not in {"none", "cosine"}:
+        raise ValueError("optimizer.lr_scheduler must be one of: none, cosine")
+    return normalized
 
 
 def _resolve_auto_bool(value: Any, *, default: bool) -> bool:
@@ -566,6 +583,17 @@ def _validate_config(training_config: Mapping[str, Any]) -> None:
         raise ValueError("optimizer.learning_rate must be greater than 0")
     if float(optimizer_config.get("weight_decay", 0.0)) < 0:
         raise ValueError("optimizer.weight_decay must be greater than or equal to 0")
+    if int(optimizer_config.get("warmup_steps", 0)) < 0:
+        raise ValueError("optimizer.warmup_steps must be greater than or equal to 0")
+    warmup_ratio = optimizer_config.get("warmup_ratio")
+    if warmup_ratio is not None and not 0.0 <= float(warmup_ratio) < 1.0:
+        raise ValueError("optimizer.warmup_ratio must be in [0, 1) when provided")
+    min_lr_ratio = optimizer_config.get("min_lr_ratio")
+    if min_lr_ratio is not None and not 0.0 <= float(min_lr_ratio) <= 1.0:
+        raise ValueError("optimizer.min_lr_ratio must be between 0 and 1")
+    lr_decay_steps = optimizer_config.get("lr_decay_steps")
+    if lr_decay_steps is not None and int(lr_decay_steps) <= 0:
+        raise ValueError("optimizer.lr_decay_steps must be greater than 0 when provided")
 
     if runtime_config.get("multi_gpu_mode") not in {"auto", "none", "data_parallel", "ddp"}:
         raise ValueError("runtime.multi_gpu_mode must be one of: auto, none, data_parallel, ddp")

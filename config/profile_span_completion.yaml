@@ -47,11 +47,22 @@ training:
   save_final: true
   train_on_prompt: false
   include_separator_in_loss: false
+  # Supervise the end-of-sequence token after the span so the model learns to stop
+  # at the correct length instead of running past the completed span.
+  include_eos_in_loss: true
 optimizer:
   type: adamw
   learning_rate: 0.00005
   weight_decay: 0.1
   fused: auto
+  # Warmup is important here: the fused-vocab profile/separator embedding rows are
+  # randomly initialised when adapting the protein backbone, so a short warmup
+  # keeps their large early gradients from destabilising the restored weights.
+  lr_scheduler: cosine
+  warmup_steps: 100
+  min_lr_ratio: 0.1
+  # Set to enable full cosine decay (absolute optimizer steps); null = warmup then hold.
+  lr_decay_steps: null
 runtime:
   device: auto
   multi_gpu_mode: auto

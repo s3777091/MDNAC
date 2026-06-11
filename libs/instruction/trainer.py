@@ -30,6 +30,10 @@ from libs.core.pretrain.protein_lm.core import (
     _natural_path_sort_key,
     load_protein_pretrain_checkpoint_for_profile_tuning,
 )
+from libs.core.pretrain.lr_schedule import (
+    LRScheduleConfig,
+    build_warmup_cosine_scheduler,
+)
 from libs.core.pretrain.training import compute_mdc_causal_lm_loss
 from libs.core.pretrain.training_config import (
     _as_project_path,
@@ -102,6 +106,11 @@ class InstructionTrainingConfig:
     learning_rate: float = 2e-4
     weight_decay: float = 0.1
     fused: bool | str = "auto"
+    lr_scheduler: str = "none"
+    warmup_steps: int = 0
+    warmup_ratio: float | None = None
+    min_lr_ratio: float = 0.1
+    lr_decay_steps: int | None = None
     device: str = "auto"
     multi_gpu_mode: str = "auto"
     ddp_find_unused_parameters: bool = False
@@ -112,6 +121,7 @@ class InstructionTrainingConfig:
     seed: int = 123
     train_on_prompt: bool = False
     include_separator_in_loss: bool = False
+    include_eos_in_loss: bool = False
     strict_backbone: bool = True
 
 
@@ -292,6 +302,15 @@ def build_instruction_training_config(
             _config_value(config_mapping, ("optimizer", "fused")),
             default=True,
         ),
+        lr_scheduler=_normalize_instruction_lr_scheduler(
+            _config_value(config_mapping, ("optimizer", "lr_scheduler"))
+        ),
+        warmup_steps=int(_config_value(config_mapping, ("optimizer", "warmup_steps")) or 0),
+        warmup_ratio=_optional_float(_config_value(config_mapping, ("optimizer", "warmup_ratio"))),
+        min_lr_ratio=float(
+            _optional_float(_config_value(config_mapping, ("optimizer", "min_lr_ratio")), default=0.1)
+        ),
+        lr_decay_steps=_optional_int(_config_value(config_mapping, ("optimizer", "lr_decay_steps"))),
         device=_normalize_device(_config_value(config_mapping, ("runtime", "device")) or "auto"),
         multi_gpu_mode=str(_config_value(config_mapping, ("runtime", "multi_gpu_mode")) or "auto"),
         ddp_find_unused_parameters=_bool_value(
@@ -316,8 +335,21 @@ def build_instruction_training_config(
             _config_value(config_mapping, ("training", "include_separator_in_loss")),
             False,
         ),
+        include_eos_in_loss=_bool_value(
+            _config_value(config_mapping, ("training", "include_eos_in_loss")),
+            False,
+        ),
         strict_backbone=_bool_value(_config_value(config_mapping, ("resume", "strict_backbone")), True),
     )
+
+
+def _normalize_instruction_lr_scheduler(value: Any) -> str:
+    if value is None:
+        return "none"
+    normalized = str(value).strip().lower()
+    if normalized not in {"none", "cosine"}:
+        raise ValueError("optimizer.lr_scheduler must be one of: none, cosine")
+    return normalized
 
 
 def _config_value(config_mapping: Mapping[str, Any], *paths: tuple[str, ...]) -> Any:
@@ -773,6 +805,7 @@ class InstructionTrainer:
             world_size=self.runtime.world_size,
             train_on_prompt=self.config.train_on_prompt,
             include_separator_in_loss=self.config.include_separator_in_loss,
+            include_eos_in_loss=self.config.include_eos_in_loss,
         )
 
     def _per_epoch_step_limit(self, train_count: int) -> int | None:
@@ -828,6 +861,24 @@ class InstructionTrainer:
         use_grad_scaler = use_autocast and amp_dtype == torch.float16
         grad_scaler = torch.amp.GradScaler("cuda") if use_grad_scaler else None
         optimizers = _optimizer_list(self.optimizer)
+        scheduler = build_warmup_cosine_scheduler(
+            optimizers,
+            LRScheduleConfig(
+                enabled=self.config.lr_scheduler == "cosine",
+                warmup_steps=self.config.warmup_steps,
+                warmup_ratio=self.config.warmup_ratio,
+                min_lr_ratio=self.config.min_lr_ratio,
+                decay_steps=self.config.lr_decay_steps,
+            ),
+            max_steps=self.config.max_steps,
+            last_step=self._global_step,
+        )
+        if scheduler is not None:
+            horizon = "cosine decay" if scheduler.decays else "warmup then hold"
+            self._log(
+                f"📉 LR schedule: warmup={scheduler.warmup_steps} steps | {horizon} | "
+                f"min_lr_ratio={scheduler.min_lr_ratio} | start_lr={scheduler.current_lr():.2e}"
+            )
         micro_step = 0
         start_epoch = self._epoch
         log_every_steps = self._log_every_steps()
@@ -885,6 +936,8 @@ class InstructionTrainer:
                         opt.zero_grad(set_to_none=True)
 
                     self._global_step += 1
+                    if scheduler is not None:
+                        scheduler.step()
                     if self.is_main_process and self._global_step % log_every_steps == 0:
                         lr_text = _format_optimizer_lrs(optimizers)
                         self._log(
@@ -923,6 +976,8 @@ class InstructionTrainer:
                 for opt in optimizers:
                     opt.zero_grad(set_to_none=True)
                 self._global_step += 1
+                if scheduler is not None:
+                    scheduler.step()
                 if self.is_main_process:
                     self._log(
                         f"  🔄 step={self._global_step} | epoch={epoch} | leftover_micro_steps="

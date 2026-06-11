@@ -20,6 +20,10 @@ from libs.core.pretrain.distributed import (
 from libs.core.pretrain.training import (
     compute_mdc_causal_lm_loss,
 )
+from libs.core.pretrain.lr_schedule import (
+    LRScheduleConfig,
+    build_warmup_cosine_scheduler,
+)
 from libs.core.pretrain.training_config import (
     apply_protein_training_optimizer_settings,
     build_protein_training_data_config,
@@ -565,6 +569,19 @@ class ProteinPretrainTrainer:
         )
         self._configure_linear_attention_precision()
 
+        scheduler = build_warmup_cosine_scheduler(
+            optimizers,
+            LRScheduleConfig.from_optimizer_config(self._optimizer_cfg),
+            max_steps=settings.max_steps,
+            last_step=self._global_step,
+        )
+        if scheduler is not None:
+            horizon = "cosine decay" if scheduler.decays else "warmup then hold"
+            self._log(
+                f"📉 LR schedule: warmup={scheduler.warmup_steps} steps | "
+                f"{horizon} | min_lr_ratio={scheduler.min_lr_ratio} | start_lr={scheduler.current_lr():.2e}"
+            )
+
         accumulator = GradientAccumulator(settings.gradient_accumulation_steps)
         _last_loss = float("nan")
 
@@ -592,11 +609,15 @@ class ProteinPretrainTrainer:
                     if accumulator.at_boundary:
                         self._optimizer_step(optimizers, precision, settings)
                         self._global_step += 1
+                        if scheduler is not None:
+                            scheduler.step()
                         _last_loss = float(loss.item())
 
                         if self._global_step % settings.log_every_steps == 0:
+                            lr_text = f" | lr={scheduler.current_lr():.2e}" if scheduler is not None else ""
                             self._log(
-                                f"  🔄 step={self._global_step} | loss={_last_loss:.4f} | tokens={self._tokens_seen:,}"
+                                f"  🔄 step={self._global_step} | loss={_last_loss:.4f} | "
+                                f"tokens={self._tokens_seen:,}{lr_text}"
                             )
 
                         if self._should_run_step_eval(settings, step_eval_enabled=step_eval_enabled):
@@ -624,6 +645,8 @@ class ProteinPretrainTrainer:
             if accumulator.has_leftover:
                 self._optimizer_step(optimizers, precision, settings)
                 self._global_step += 1
+                if scheduler is not None:
+                    scheduler.step()
 
             self._distributed_barrier()
 

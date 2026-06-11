@@ -27,6 +27,7 @@ class FusedProfileSequenceBatch:
         ignore_index: int = IGNORE_INDEX,
         train_on_prompt: bool = False,
         include_separator_in_loss: bool = False,
+        include_eos_in_loss: bool = False,
     ) -> CausalLMBatch:
         if self.token_ids.ndim != 2:
             raise ValueError("token_ids must have shape (batch, seq_len).")
@@ -52,7 +53,13 @@ class FusedProfileSequenceBatch:
                 if include_separator_in_loss
                 else self.sequence_spans[:, 0]
             ).unsqueeze(1)
-            loss_end = self.sequence_spans[:, 1].unsqueeze(1)
+            # sequence_spans[:, 1] is the exclusive end of the target span, i.e. the
+            # index of the appended end-of-sequence token. Extending the supervised
+            # range by one teaches the model to emit EOS after the final span token
+            # so it learns where to stop. Padded rows stay masked because
+            # valid_targets is already AND-ed with the attention mask above.
+            eos_offset = 1 if include_eos_in_loss else 0
+            loss_end = (self.sequence_spans[:, 1] + eos_offset).unsqueeze(1)
             valid_targets = valid_targets & (target_positions >= loss_start) & (target_positions < loss_end)
 
         labels = labels.masked_fill(~valid_targets, ignore_index)

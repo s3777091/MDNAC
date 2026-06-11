@@ -179,6 +179,7 @@ def create_instruction_dataloader(
     world_size: int | None = None,
     train_on_prompt: bool = False,
     include_separator_in_loss: bool = False,
+    include_eos_in_loss: bool = False,
 ) -> DataLoader:
     dataset = InstructionJsonlStreamingDataset(
         artifacts,
@@ -204,6 +205,7 @@ def create_instruction_dataloader(
         artifacts,
         train_on_prompt=train_on_prompt,
         include_separator_in_loss=include_separator_in_loss,
+        include_eos_in_loss=include_eos_in_loss,
     )
     return DataLoader(
         dataset,

@@ -334,11 +334,13 @@ class MDCProfileSequencePretrainArtifacts:
         fusion_config: ProfileSequenceFusionConfig | None = None,
         train_on_prompt: bool = False,
         include_separator_in_loss: bool = False,
+        include_eos_in_loss: bool = False,
     ) -> CausalLMBatch:
         fused_batch = self.build_fused_batch(encoded_examples, fusion_config=fusion_config)
         return fused_batch.to_causal_lm_batch(
             train_on_prompt=train_on_prompt,
             include_separator_in_loss=include_separator_in_loss,
+            include_eos_in_loss=include_eos_in_loss,
         )
 
     def decode_profile(self, token_ids: Sequence[int] | torch.Tensor, skip_special: bool = False) -> str:
@@ -489,11 +491,13 @@ class MDCProfileSequenceBatchCollator:
         fusion_config: ProfileSequenceFusionConfig | None = None,
         train_on_prompt: bool = False,
         include_separator_in_loss: bool = False,
+        include_eos_in_loss: bool = False,
     ) -> None:
         self.artifacts = artifacts
         self.fusion_config = fusion_config
         self.train_on_prompt = train_on_prompt
         self.include_separator_in_loss = include_separator_in_loss
+        self.include_eos_in_loss = include_eos_in_loss
 
     def __call__(self, batch: Sequence[MDCEncodedProfileSequenceExample]) -> CausalLMBatch:
         return self.artifacts.build_causal_lm_batch(
@@ -501,6 +505,7 @@ class MDCProfileSequenceBatchCollator:
             fusion_config=self.fusion_config,
             train_on_prompt=self.train_on_prompt,
             include_separator_in_loss=self.include_separator_in_loss,
+            include_eos_in_loss=self.include_eos_in_loss,
         )
 
 
@@ -625,6 +630,7 @@ def create_mdc_profile_sequence_pretrain_dataloader(
     fusion_config: ProfileSequenceFusionConfig | None = None,
     train_on_prompt: bool = False,
     include_separator_in_loss: bool = False,
+    include_eos_in_loss: bool = False,
     distributed: bool | None = None,
     rank: int | None = None,
     world_size: int | None = None,
@@ -635,6 +641,7 @@ def create_mdc_profile_sequence_pretrain_dataloader(
         fusion_config=fusion_config,
         train_on_prompt=train_on_prompt,
         include_separator_in_loss=include_separator_in_loss,
+        include_eos_in_loss=include_eos_in_loss,
     )
     sampler = create_mdc_distributed_sampler(
         dataset,
@@ -673,6 +680,7 @@ def create_streaming_mdc_profile_sequence_pretrain_dataloader(
     fusion_config: ProfileSequenceFusionConfig | None = None,
     train_on_prompt: bool = False,
     include_separator_in_loss: bool = False,
+    include_eos_in_loss: bool = False,
     shuffle_parts: bool = False,
     shuffle_records: bool = False,
     seed: int = 0,
@@ -700,6 +708,7 @@ def create_streaming_mdc_profile_sequence_pretrain_dataloader(
         fusion_config=fusion_config,
         train_on_prompt=train_on_prompt,
         include_separator_in_loss=include_separator_in_loss,
+        include_eos_in_loss=include_eos_in_loss,
     )
     return DataLoader(
         dataset,
