@@ -3,7 +3,7 @@ environment: local
 environments:
   local:
     openai:
-      model: gpt-4o-mini
+      model: gpt-5.4-mini
       api_key_env: OPENAI_API_KEY
     exa:
       api_key_env: EXA_API_KEY
@@ -21,7 +21,7 @@ environments:
 
   production:
     openai:
-      model: gpt-4o-mini
+      model: gpt-5.4-mini
       api_key_env: OPENAI_API_KEY
     exa:
       api_key_env: EXA_API_KEY

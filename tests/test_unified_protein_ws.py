@@ -120,7 +120,6 @@ class UnifiedProteinWebSocketTests(unittest.TestCase):
                 websocket.send_json(
                     {
                         "user_input": "toi muon tang nang suat cay trong",
-                        "source": "ncbi",
                         "limit": 2,
                         "mask_length": 12,
                     }
@@ -136,6 +135,8 @@ class UnifiedProteinWebSocketTests(unittest.TestCase):
         event_names = [event["event"] for event in events]
         self.assertIn("clarification_completed", event_names)
         self.assertIn("public_research_completed", event_names)
+        fetch_started = next(event for event in events if event["event"] == "fetch_started")
+        self.assertEqual("ncbi", fetch_started["source"])
         self.assertIn("semantic_search_completed", event_names)
         completed = events[-1]
         self.assertEqual("completed", completed["event"], events)

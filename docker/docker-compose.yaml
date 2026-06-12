@@ -77,6 +77,22 @@ services:
     volumes:
       - ..:/workspace
 
+  next-dashboard:
+    build:
+      context: ../next
+    container_name: mdnac-next-dashboard
+    restart: unless-stopped
+    environment:
+      MDNAC_API_URL: http://protein-api:8000
+      NEXT_PUBLIC_MDNAC_API_URL: http://localhost:${API_PORT:-8000}
+      NEXT_PUBLIC_MDNAC_WS_URL: ws://localhost:${API_PORT:-8000}/protein-span-completion/ws
+      MDNAC_PUBLIC_WS_URL: ws://localhost:${API_PORT:-8000}/protein-span-completion/ws
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      - protein-api
+    ports:
+      - "${NEXT_DASHBOARD_PORT:-3000}:3000"
+
   ai-agent-api:
     image: ghcr.io/astral-sh/uv:python3.11-bookworm
     container_name: mdnac-ai-agent-api

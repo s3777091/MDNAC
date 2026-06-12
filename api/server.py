@@ -21,9 +21,18 @@ from ai_agent.schemas import (
     AgentRunRequest,
     AgentRunResponse,
     ApprovalRequest,
+    ProteinSpanResumeRequest,
+    ProteinSpanStartRequest,
     RejectionRequest,
 )
-from ai_agent.skills import load_agent_skills, render_selected_skills, select_agent_skills
+from ai_agent.agent.clarify import clarify_protein_request as _clarify_protein_request
+from ai_agent.agent.protein_graph import (
+    ProteinSpanDeps,
+    build_protein_span_graph,
+    initial_protein_span_state,
+    interpret_result,
+)
+from ai_agent.skills import load_agent_skills
 from ai_agent.tools.exa_search import ExaSearchTool
 from ai_agent.tools.protein_semantic_search import (
     choose_semantic_mask_span,
@@ -139,6 +148,34 @@ def create_app(
         if cache_key not in _TOOL_CACHE:
             _TOOL_CACHE[cache_key] = ExaSearchTool(agent_settings.exa)
         return _TOOL_CACHE[cache_key]
+
+    protein_span_graph_cache: dict[str, Any] = {}
+
+    def _fetch_protein_records(query: str, source: str, limit: int) -> list[Any]:
+        if source not in {"ncbi", "ena", "auto"}:
+            raise _HttpError(
+                400,
+                f"Unsupported protein source '{source}'. Use 'ncbi', 'ena', or 'auto'.",
+            )
+        return _fetch_sequence_records(query, source=source, limit=limit)
+
+    def get_protein_span_graph() -> Any:
+        # Built lazily so health/ready checks do not require the OpenAI key.
+        # The compiled graph owns an in-process checkpointer that holds paused
+        # (waiting-for-human) threads between /start and /resume calls.
+        if "graph" not in protein_span_graph_cache:
+            deps = ProteinSpanDeps(
+                model=get_model(),
+                settings=agent_settings,
+                search_tool=get_search_tool(),
+                fetch_records=_fetch_protein_records,
+                build_source_row=lambda record, raw_input: _build_span_source_row(
+                    record, raw_input=raw_input
+                ),
+                make_span_example=make_span_completion_example,
+            )
+            protein_span_graph_cache["graph"] = build_protein_span_graph(deps)
+        return protein_span_graph_cache["graph"]
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -271,6 +308,57 @@ def create_app(
             approval_id=None,
         )
 
+    @app.post("/agent/protein-span/start")
+    def protein_span_start(request: ProteinSpanStartRequest) -> dict[str, Any]:
+        """Start the protein-span LangGraph agent.
+
+        Runs Exa research then clarification. Returns either
+        ``status=waiting_for_human`` with the question + a thread_id to resume,
+        or a completed result with ``instruction``/``input``.
+        """
+        from uuid import uuid4
+
+        thread_id = uuid4().hex
+        state = initial_protein_span_state(
+            user_input=request.user_input,
+            context=_normalize_context(request.context),
+            params={
+                "source": request.source,
+                "limit": request.limit,
+                "semantic_top_k": request.semantic_top_k,
+                "mask_policy": request.mask_policy,
+                "mask_start": request.mask_start,
+                "mask_length": request.mask_length,
+                "left_flank_size": request.left_flank_size,
+                "right_flank_size": request.right_flank_size,
+                "require_clarification": request.require_clarification,
+                "research_with_exa": request.research_with_exa,
+            },
+        )
+        config = {"configurable": {"thread_id": thread_id}}
+        try:
+            result = interpret_result(get_protein_span_graph().invoke(state, config))
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"thread_id": thread_id, **result}
+
+    @app.post("/agent/protein-span/resume")
+    def protein_span_resume(request: ProteinSpanResumeRequest) -> dict[str, Any]:
+        """Resume a paused protein-span agent thread with the human's decision."""
+        from langgraph.types import Command
+
+        decision: dict[str, Any] = {"action": request.action}
+        if request.user_input is not None:
+            decision["user_input"] = request.user_input
+        config = {"configurable": {"thread_id": request.thread_id}}
+        try:
+            result = interpret_result(
+                get_protein_span_graph().invoke(Command(resume=decision), config)
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"thread_id": request.thread_id, **result}
+
     @app.websocket(PROTEIN_SPAN_COMPLETION_WS_ROUTE)
     async def protein_span_completion_ws(websocket: WebSocket) -> None:
         await websocket.accept()
@@ -286,21 +374,27 @@ def create_app(
                 },
             )
 
+            # Step 1: run Exa public research on the original (possibly vague)
+            # user input first, so the clarifying question can propose suggestions
+            # grounded in outside domain evidence.
+            evidence = await _run_public_research(
+                websocket=websocket,
+                request=request,
+                query=request.user_input,
+                search_tool_factory=get_search_tool,
+            )
+
+            # Step 2: ask the human to confirm/refine the query, using the Exa
+            # evidence to power the proposed suggestions.
             clarification = await _resolve_clarification(
                 websocket=websocket,
                 request=request,
                 model_factory=get_model,
                 settings=agent_settings,
+                evidence=evidence,
             )
             refined_query = clarification["query"]
             request = clarification["request"]
-
-            evidence = await _run_public_research(
-                websocket=websocket,
-                request=request,
-                query=refined_query,
-                search_tool_factory=get_search_tool,
-            )
 
             await _send_event(
                 websocket,
@@ -312,10 +406,10 @@ def create_app(
                 },
             )
             records = await asyncio.to_thread(
-                _fetch_sequence_records,
+                _fetch_protein_records,
                 refined_query,
-                source=request.source,
-                limit=request.limit,
+                request.source,
+                request.limit,
             )
             await _send_event(
                 websocket,
@@ -339,7 +433,16 @@ def create_app(
                 top_k=request.semantic_top_k,
             )
             if not matches:
-                raise ValueError("No fetched protein record passed semantic ranking.")
+                longest = max(
+                    (len(_compact_protein_sequence(record.sequence)) for record in records),
+                    default=0,
+                )
+                raise ValueError(
+                    f"None of the {len(records)} fetched protein record(s) is long enough "
+                    f"for a {request.mask_length}-residue mask span (longest fetched sequence "
+                    f"is {longest} aa). Lower mask_length to {longest} or less, or refine the "
+                    f"query toward longer proteins."
+                )
 
             top_match = matches[0]
             await _send_event(
@@ -431,13 +534,35 @@ def main() -> None:
         config_path=args.agent_config,
         environment=args.agent_env or args.env,
     )
-    uvicorn.run(
-        "server:create_app",
-        factory=True,
-        host=args.host or protein_settings.server.host or agent_settings.server.host,
-        port=args.port or protein_settings.server.port,
-        reload=bool(args.reload or protein_settings.server.reload or agent_settings.server.reload),
+    reload_enabled = bool(
+        args.reload or protein_settings.server.reload or agent_settings.server.reload
     )
+    run_kwargs: dict[str, Any] = {
+        "factory": True,
+        "host": args.host or protein_settings.server.host or agent_settings.server.host,
+        "port": args.port or protein_settings.server.port,
+        "reload": reload_enabled,
+    }
+    if reload_enabled:
+        # WatchFiles registers each reload dir recursively and crashes with an
+        # EIO ("os error 5") the moment it descends into a host-mounted
+        # virtualenv -- e.g. the Windows .venv-win shared into this Linux
+        # container via the repo bind-mount. uvicorn's reload_excludes only
+        # filter events, they do not stop the walk, so we instead point the
+        # watcher at first-party source dirs only and never at any .venv*/data.
+        app_dir = Path(__file__).resolve().parent
+        repo_root = app_dir.parent
+        candidate_dirs = [
+            app_dir / "ai_agent",
+            app_dir / "interfere",
+            app_dir / "structure_predictor",
+            app_dir / "tools",
+            repo_root / "libs",
+        ]
+        watch_dirs = [str(path) for path in candidate_dirs if path.is_dir()]
+        if watch_dirs:
+            run_kwargs["reload_dirs"] = watch_dirs
+    uvicorn.run("server:create_app", **run_kwargs)
 
 
 class _HttpError(RuntimeError):
@@ -457,6 +582,7 @@ async def _resolve_clarification(
     request: Any,
     model_factory: Any,
     settings: AISettings,
+    evidence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     current_request = request
     for _ in range(3):
@@ -474,6 +600,7 @@ async def _resolve_clarification(
             settings,
             current_request.user_input,
             _normalize_context(current_request.context),
+            evidence or [],
         )
         await _send_event(websocket, "clarification_completed", clarification)
 
@@ -511,93 +638,6 @@ async def _resolve_clarification(
         raise ValueError("Unknown clarification action. Use approve, revise, or cancel.")
 
     raise ValueError("Clarification did not converge after 3 attempts.")
-
-
-def _clarify_protein_request(
-    model: ChatModel,
-    settings: AISettings,
-    user_input: str,
-    context: str,
-) -> dict[str, Any]:
-    selected_skills = select_agent_skills(
-        user_input=user_input,
-        context=context,
-        search_needed=False,
-    )
-    skills_text = render_selected_skills(selected_skills)
-    prompt = (
-        "You are preparing a precise protein database semantic search for MDNAC.\n"
-        "Decide whether the user's request is specific enough to search protein records.\n"
-        "If the request is vague, propose a better search query and ask for approval.\n"
-        "For example, if the user only says they want to increase crop yield, explain that "
-        "the goal needs a mechanism/crop/organism and propose a protein-search query around "
-        "plant growth-promoting proteins such as nitrogen fixation, phosphate solubilization, "
-        "auxin biosynthesis, ACC deaminase, stress tolerance, or biocontrol.\n\n"
-        "Return JSON only with keys: needs_clarification, message, proposed_query, "
-        "research_query.\n\n"
-        "Selected Skills:\n"
-        f"{skills_text}\n\n"
-        f"User input: {user_input}\n\n"
-        f"Context: {context}"
-    )
-    messages = [
-        {"role": "system", "content": settings.system_prompt},
-        {"role": "user", "content": prompt},
-    ]
-    try:
-        raw = model.generate(messages, temperature=0.0)
-        parsed = _parse_json_object(raw)
-        return {
-            "needs_clarification": bool(parsed.get("needs_clarification")),
-            "message": str(parsed.get("message") or ""),
-            "proposed_query": str(parsed.get("proposed_query") or user_input),
-            "research_query": str(parsed.get("research_query") or parsed.get("proposed_query") or user_input),
-        }
-    except Exception:
-        return _heuristic_clarification(user_input)
-
-
-def _heuristic_clarification(user_input: str) -> dict[str, Any]:
-    lowered = user_input.lower()
-    vague_crop_request = any(term in lowered for term in ("crop", "cay", "nang suat", "yield"))
-    has_mechanism = any(
-        term in lowered
-        for term in (
-            "nitrogen",
-            "phosphate",
-            "auxin",
-            "iaa",
-            "acc",
-            "deaminase",
-            "stress",
-            "drought",
-            "salinity",
-            "biocontrol",
-            "protein",
-        )
-    )
-    if vague_crop_request and not has_mechanism:
-        proposed = (
-            "plant growth-promoting protein for crop yield improvement nitrogen fixation "
-            "phosphate solubilization auxin biosynthesis ACC deaminase stress tolerance"
-        )
-        return {
-            "needs_clarification": True,
-            "message": (
-                "Cau hoi cua ban chua ro co che/cay trong/vi sinh vat muc tieu. "
-                "Minh co the chinh lai thanh truy van protein lien quan den tang "
-                "nang suat cay trong qua co dinh dam, hoa tan phosphate, auxin/IAA, "
-                "ACC deaminase va chong stress. Neu dong y, gui action=approve."
-            ),
-            "proposed_query": proposed,
-            "research_query": proposed,
-        }
-    return {
-        "needs_clarification": False,
-        "message": "Request is specific enough for protein search.",
-        "proposed_query": user_input,
-        "research_query": user_input,
-    }
 
 
 async def _run_public_research(
@@ -687,6 +727,11 @@ def _fetch_sequence_records(
     source: Literal["ncbi", "ena", "auto"],
     limit: int,
 ) -> list[Any]:
+    if source not in {"ncbi", "ena", "auto"}:
+        raise _HttpError(
+            400,
+            f"Unsupported sequence source '{source}'. Use 'ncbi', 'ena', or 'auto'.",
+        )
     (
         FetchRequest,
         DataNotFoundError,
@@ -762,22 +807,6 @@ def _copy_model(model: Any, **updates: Any) -> Any:
     if hasattr(model, "model_copy"):
         return model.model_copy(update=updates)
     return model.copy(update=updates)
-
-
-def _parse_json_object(value: str) -> dict[str, Any]:
-    text = str(value or "").strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError("Model did not return a JSON object.")
-    parsed = json.loads(text[start : end + 1])
-    if not isinstance(parsed, dict):
-        raise ValueError("Model JSON response must be an object.")
-    return parsed
 
 
 def _compact_protein_sequence(sequence: str) -> str:

@@ -247,6 +247,20 @@ class TestTrainConfig16gbGeneration(unittest.TestCase):
             self.assertGreater(chosen["gradient_accumulation_steps"], 0)
 
 
+class TestRepository16gbConfigs(unittest.TestCase):
+    """Guard the checked-in 16GB presets against accidental RAM-heavy defaults."""
+
+    def test_train_16gb_config_is_conservative(self) -> None:
+        config = load_protein_training_config(Path("."), config_path="config/train.16gb.yaml")
+
+        self.assertLessEqual(config["data"]["batch_size"], 2)
+        self.assertEqual(0, config["data"]["num_workers"])
+        self.assertFalse(config["data"]["pin_memory"])
+        self.assertLessEqual(config["data"]["shuffle_buffer_size"], 1024)
+        self.assertLessEqual(config["training"]["eval_batches"], 2)
+        self.assertLessEqual(config["runtime"]["target_vram_gb"], 12.0)
+
+
 class TestMixedPrecisionConfig(unittest.TestCase):
     """Test mixed precision config parsing and dtype resolution."""
 

@@ -19,13 +19,29 @@ class OpenAIChatModel:
     def generate(self, messages: list[dict[str, str]], **kwargs: object) -> str:
         client = self._get_client()
         temperature = kwargs.get("temperature", 0.0)
-        response = client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-        )
+        try:
+            response = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+            )
+        except Exception as exc:
+            # Newer model families (e.g. gpt-5.x) reject a non-default temperature
+            # on chat.completions. Retry once with the provider default.
+            if temperature is not None and self._is_temperature_error(exc):
+                response = client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                )
+            else:
+                raise
         content = response.choices[0].message.content
         return str(content or "")
+
+    @staticmethod
+    def _is_temperature_error(exc: Exception) -> bool:
+        message = str(getattr(exc, "message", "") or exc).lower()
+        return "temperature" in message
 
     def _get_client(self):
         if self._client is None:

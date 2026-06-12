@@ -16,12 +16,12 @@ data:
   instruction_part_glob: instruction_part_*.jsonl
   train_ratio: 0.95
   split_seed: 42
-  batch_size: 8
-  num_workers: 4
-  pin_memory: auto
+  batch_size: 2
+  num_workers: 0
+  pin_memory: false
   shuffle_files: true
   shuffle_records: true
-  shuffle_buffer_size: 4096
+  shuffle_buffer_size: 512
   audit_before_training: true
   reuse_existing_audit: true
   count_splits_before_training: auto
@@ -35,9 +35,9 @@ artifacts:
 training:
   num_epochs: 3
   max_steps:
-  gradient_accumulation_steps: 8
-  eval_freq: 50
-  eval_batches: 64
+  gradient_accumulation_steps: 32
+  eval_freq: 100
+  eval_batches: 2
   log_every_steps: 10
   save_every_steps: 100
   grad_clip_norm: 1.0
@@ -56,7 +56,7 @@ runtime:
   multi_gpu_mode: auto
   ddp_find_unused_parameters: false
   data_parallel_device_ids:
-  mixed_precision: fp16
+  mixed_precision: bf16
   seed: 123
 resume:
   resume_if_available: true

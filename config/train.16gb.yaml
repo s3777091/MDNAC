@@ -18,12 +18,12 @@ data:
   validate_cached_parts: true
   train_ratio: 0.9
   split_seed: 42
-  batch_size: 8
-  num_workers: 4
-  pin_memory: auto
+  batch_size: 4
+  num_workers: 0
+  pin_memory: false
   shuffle_parts: true
   shuffle_examples: true
-  shuffle_buffer_size: 4096
+  shuffle_buffer_size: 512
 model:
   progen_model_size: 0.8B
   context_length: 512
@@ -44,10 +44,10 @@ model:
 training:
   num_epochs: 5
   max_steps: null
-  gradient_accumulation_steps: 16
+  gradient_accumulation_steps: 32
   save_every_steps: 100
-  eval_freq: 20
-  eval_batches: 64
+  eval_freq: 100
+  eval_batches: 2
   grad_clip_norm: 1.0
   save_last: false
   save_best: true
@@ -62,15 +62,18 @@ optimizer:
   lr_scheduler: cosine
   warmup_steps: 200
   min_lr_ratio: 0.1
-  lr_decay_steps: null
+  # Enables real cosine decay (without forcing an early stop, unlike training.max_steps).
+  # TUNE to ~ total expected optimizer steps for your corpus*epochs; over/under just
+  # means LR floors early or never quite reaches min_lr — neither risks VRAM or stopping.
+  lr_decay_steps: 20000
 runtime:
   device: auto
   multi_gpu_mode: auto
   ddp_find_unused_parameters: false
   data_parallel_device_ids: null
-  mixed_precision: fp16
+  mixed_precision: bf16
   preflight_vram_check: true
-  target_vram_gb: 28.0
+  target_vram_gb: 12.0
   use_fp32_fallback_linear_attention: false
 resume:
   checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
