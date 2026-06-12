@@ -129,6 +129,17 @@ def load_protein_training_config(
                 True,
             ),
             "shuffle_buffer_size": int(_nested_get(config_mapping, "data", "shuffle_buffer_size") or 8192),
+            "merge_parts_before_training": _bool_value(
+                _nested_get(config_mapping, "data", "merge_parts_before_training"),
+                False,
+            ),
+            "merged_train_path": _optional_string(
+                _nested_get(config_mapping, "data", "merged_train_path")
+            ),
+            "merge_overwrite": _bool_value(
+                _nested_get(config_mapping, "data", "merge_overwrite"),
+                False,
+            ),
         },
         "model": {
             "progen_model_size": str(_nested_get(config_mapping, "model", "progen_model_size") or "0.8B"),
@@ -202,6 +213,10 @@ def load_protein_training_config(
             ),
             "preflight_vram_check": _bool_value(
                 _nested_get(config_mapping, "runtime", "preflight_vram_check"),
+                False,
+            ),
+            "gradient_checkpointing": _bool_value(
+                _nested_get(config_mapping, "runtime", "gradient_checkpointing"),
                 False,
             ),
             "target_vram_gb": _optional_float(
@@ -321,8 +336,14 @@ def create_protein_training_optimizer(
     optimizer_kwargs: dict[str, Any] = {}
     if _should_use_fused_adamw(optimizer_config.get("fused"), resolved_device):
         optimizer_kwargs["fused"] = True
+    # Only optimize parameters that require gradients. For full fine-tuning/pretraining
+    # this is every parameter; with LoRA (frozen backbone) it drops the optimizer state
+    # to a few percent of the model, which is the whole point of LoRA.
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    if not trainable_params:
+        raise ValueError("No trainable parameters found for the optimizer.")
     return torch.optim.AdamW(
-        model.parameters(),
+        trainable_params,
         lr=learning_rate,
         weight_decay=weight_decay,
         **optimizer_kwargs,

@@ -20,6 +20,9 @@ def generate_profile_conditioned_protein(
     max_new_tokens: int = 256,
     temperature: float = 0.8,
     top_k: int | None = 50,
+    top_p: float | None = None,
+    repetition_penalty: float = 1.0,
+    restrict_to_sequence_tokens: bool = True,
     num_candidates: int = 32,
 ) -> tuple[GeneratedProteinCandidate, ...]:
     import torch as _torch
@@ -30,6 +33,7 @@ def generate_profile_conditioned_protein(
         TRAIN_END_TOKEN,
         TRAIN_SEPARATOR_TOKEN,
     )
+    from libs.core.pretrain.sampling import sample_next_token
     from libs.core.structure.candidates import GeneratedProteinCandidate
 
     # Encode the profile prompt
@@ -69,6 +73,19 @@ def generate_profile_conditioned_protein(
                 "Cannot determine EOS token ID from layout or sequence_tokenizer."
             )
 
+    # Build the allowed-token set: restrict generation to amino-acid sequence tokens
+    # (+ EOS) so the decoder cannot emit profile/separator/pad ids — no invalid tokens.
+    allowed_token_ids = None
+    if restrict_to_sequence_tokens:
+        try:
+            seq_start = int(layout.sequence_offset)
+            seq_end = seq_start + int(layout.sequence_vocab_size)
+            allowed_token_ids = set(range(seq_start, seq_end))
+            allowed_token_ids.add(int(eos_token_id))
+            allowed_token_ids.add(int(getattr(layout, "eos_token_id", eos_token_id)))
+        except (AttributeError, TypeError):
+            allowed_token_ids = None
+
     # Generate candidates
     base_model = model
     unwrap = getattr(model, "module", None)
@@ -87,20 +104,15 @@ def generate_profile_conditioned_protein(
                 logits = base_model(token_ids)
                 next_logits = logits[:, -1, :]
 
-                if temperature > 0.0:
-                    next_logits = next_logits / temperature
-                    if top_k is not None:
-                        top_values, _ = _torch.topk(next_logits, min(top_k, next_logits.size(-1)))
-                        threshold = top_values[:, -1].unsqueeze(-1)
-                        next_logits = _torch.where(
-                            next_logits < threshold,
-                            _torch.full_like(next_logits, float("-inf")),
-                            next_logits,
-                        )
-                    probs = _torch.softmax(next_logits, dim=-1)
-                    next_token = _torch.multinomial(probs, num_samples=1)
-                else:
-                    next_token = _torch.argmax(next_logits, dim=-1, keepdim=True)
+                next_token = sample_next_token(
+                    next_logits,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    generated_ids=token_ids[0, prompt_tensor.size(1):],
+                    allowed_token_ids=allowed_token_ids,
+                )
 
                 token_ids = _torch.cat([token_ids, next_token], dim=1)
 

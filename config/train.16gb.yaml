@@ -24,6 +24,13 @@ data:
   shuffle_parts: true
   shuffle_examples: true
   shuffle_buffer_size: 512
+  # Merge all train_part_*.txt into ONE file at train start (streaming concat, low RAM),
+  # then stream it with LINE-level worker sharding. Avoids multi-part complexity while
+  # keeping the streaming flow. Off here (3 GB-RAM box, num_workers 0); flip to true if
+  # you prefer a single merged corpus. Idempotent (reuses up-to-date merged file).
+  merge_parts_before_training: false
+  merged_train_path: null      # default: <train_part_cache_dir>/merged_train.txt
+  merge_overwrite: false
 model:
   progen_model_size: 0.8B
   context_length: 512
@@ -75,6 +82,9 @@ runtime:
   preflight_vram_check: true
   target_vram_gb: 12.0
   use_fp32_fallback_linear_attention: false
+  # Set true to recompute block activations in backward: ~half the activation VRAM for
+  # ~30% slower steps. Numerically exact here (no dropout). Lets you raise batch/context.
+  gradient_checkpointing: false
 resume:
   checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt
   output_checkpoint_path: data/checkpoints/protein_from_scratch/checkpoint_best.pt

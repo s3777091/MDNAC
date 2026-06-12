@@ -123,6 +123,11 @@ class InstructionTrainingConfig:
     include_separator_in_loss: bool = False
     include_eos_in_loss: bool = False
     strict_backbone: bool = True
+    gradient_checkpointing: bool = False
+    use_lora: bool = False
+    lora_rank: int = 8
+    lora_alpha: float = 16.0
+    lora_dropout: float = 0.0
 
 
 def discover_instruction_jsonl_training_paths(
@@ -340,6 +345,19 @@ def build_instruction_training_config(
             False,
         ),
         strict_backbone=_bool_value(_config_value(config_mapping, ("resume", "strict_backbone")), True),
+        gradient_checkpointing=_bool_value(
+            _config_value(config_mapping, ("runtime", "gradient_checkpointing")),
+            False,
+        ),
+        use_lora=_bool_value(
+            _config_value(config_mapping, ("lora", "enabled"), ("lora", "use_lora")),
+            False,
+        ),
+        lora_rank=int(_config_value(config_mapping, ("lora", "rank")) or 8),
+        lora_alpha=float(_config_value(config_mapping, ("lora", "alpha")) or 16.0),
+        lora_dropout=float(
+            _optional_float(_config_value(config_mapping, ("lora", "dropout")), default=0.0)
+        ),
     )
 
 
@@ -711,7 +729,40 @@ class InstructionTrainer:
                 model=app.model,
                 strict_backbone=self.config.strict_backbone,
             )
+        self._apply_efficiency_adapters(app)
         self.model = app
+
+    def _apply_efficiency_adapters(self, app: MicrobialDecoderCoreApp) -> None:
+        """Apply gradient checkpointing and/or LoRA to the backbone before training."""
+        backbone = app.model
+        if self.config.gradient_checkpointing:
+            backbone.set_gradient_checkpointing(True)
+            self._log("   🧮 Gradient checkpointing enabled (lower activation VRAM, ~30% slower).")
+        if self.config.use_lora:
+            from libs.core.lora import (
+                apply_lora_to_linears,
+                count_trainable_parameters,
+                mark_only_lora_trainable,
+            )
+
+            adapted = apply_lora_to_linears(
+                backbone.trf_blocks,
+                rank=self.config.lora_rank,
+                alpha=self.config.lora_alpha,
+                dropout=self.config.lora_dropout,
+            )
+            # Keep the re-vocabularised embedding + output head fully trainable so the
+            # fused profile/sequence token rows can still learn; freeze the rest.
+            mark_only_lora_trainable(
+                backbone,
+                also_trainable=(backbone.tok_emb, backbone.out_head),
+            )
+            trainable, total = count_trainable_parameters(backbone)
+            self._log(
+                f"   🪶 LoRA enabled (r={self.config.lora_rank}, alpha={self.config.lora_alpha}): "
+                f"adapted {adapted} linears | trainable {trainable:,}/{total:,} "
+                f"({100.0 * trainable / max(1, total):.1f}%)"
+            )
 
     def _setup_runtime(self) -> None:
         requested_device = self.config.device

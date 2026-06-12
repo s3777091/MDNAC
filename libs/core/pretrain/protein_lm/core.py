@@ -5,6 +5,7 @@ import json
 import random
 import re
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -111,9 +112,12 @@ class ProteinCausalLMStreamingTextDataset(IterableDataset[ProteinCausalLMExample
         distributed: bool | None = None,
         rank: int | None = None,
         world_size: int | None = None,
+        shard_by: str = "file",
     ) -> None:
         if context_length <= 1:
             raise ValueError("context_length must be greater than 1.")
+        if shard_by not in {"file", "line"}:
+            raise ValueError("shard_by must be one of: 'file', 'line'.")
 
         self.tokenizer = tokenizer
         self.context_length = int(context_length)
@@ -151,6 +155,7 @@ class ProteinCausalLMStreamingTextDataset(IterableDataset[ProteinCausalLMExample
         self.config = config
         self.cache_dir = Path(cache_dir) if cache_dir is not None else None
         self.keep_downloaded_parts = bool(keep_downloaded_parts)
+        self.shard_by = shard_by
         self.shuffle_parts = bool(shuffle_parts)
         self.shuffle_examples = bool(shuffle_examples)
         self.shuffle_buffer_size = int(shuffle_buffer_size)
@@ -173,6 +178,10 @@ class ProteinCausalLMStreamingTextDataset(IterableDataset[ProteinCausalLMExample
         self.epoch = int(epoch)
 
     def __iter__(self):
+        if self.shard_by == "line":
+            yield from self._iter_line_sharded()
+            return
+
         parts, partition_index = _parts_for_current_worker(
             self.parts,
             rank=self.rank,
@@ -228,6 +237,80 @@ class ProteinCausalLMStreamingTextDataset(IterableDataset[ProteinCausalLMExample
                         buffer_size=self.shuffle_buffer_size,
                     )
                 yield from examples
+
+    def _iter_line_sharded(self):
+        """Stream a merged/single corpus with LINE-level worker sharding.
+
+        Every worker reads the same file(s) but processes only the lines assigned to
+        its partition (``line_index % partition_count == partition_index``). This keeps
+        all workers busy on one merged file — unlike file-level sharding, which would
+        leave workers idle when there are fewer files than worker partitions.
+        """
+        worker_info = get_worker_info()
+        worker_id = 0 if worker_info is None else int(worker_info.id)
+        num_workers = 1 if worker_info is None else int(worker_info.num_workers)
+        partition_count = max(1, self.world_size * num_workers)
+        partition_index = self.rank * num_workers + worker_id
+        rng = random.Random(self.seed + self.epoch * 1000003 + partition_index)
+
+        examples = self._iter_line_sharded_examples(
+            partition_index=partition_index,
+            partition_count=partition_count,
+        )
+        if self.shuffle_examples:
+            examples = _iter_bounded_shuffled_examples(
+                examples,
+                rng=rng,
+                buffer_size=self.shuffle_buffer_size,
+            )
+        yield from examples
+
+    def _iter_line_sharded_examples(self, *, partition_index: int, partition_count: int):
+        line_index = -1
+        for part in self.parts:
+            if isinstance(part, S3TextPart):
+                source = part.uri
+                part_ctx = downloaded_minio_text_part(
+                    part,
+                    s3_client=self._s3_client,
+                    config=self.config,
+                    cache_dir=self.cache_dir,
+                    keep_downloaded_parts=self.keep_downloaded_parts,
+                )
+            else:
+                source = str(part)
+                part_ctx = nullcontext(Path(part))
+
+            with part_ctx as part_path:
+                with Path(part_path).open("r", encoding="utf-8") as handle:
+                    for line_number, line in enumerate(handle, start=1):
+                        if not line.strip():
+                            continue
+                        line_index += 1
+                        if line_index % partition_count != partition_index:
+                            continue
+
+                        text = line if line.endswith("\n") else line + "\n"
+                        if not _line_belongs_to_split(
+                            text,
+                            split=self.split,
+                            train_ratio=self.train_ratio,
+                            split_seed=self.split_seed,
+                        ):
+                            continue
+
+                        line_source = f"{source}:{line_number}"
+                        _validate_protein_corpus_text(text, source=line_source)
+                        token_ids = self.tokenizer.encode(text)
+                        if len(token_ids) < 2:
+                            raise ValueError(
+                                f"Protein corpus line must encode to at least 2 tokens: {line_source}"
+                            )
+                        yield from _iter_causal_lm_examples(
+                            token_ids,
+                            context_length=self.context_length,
+                            stride=self.stride,
+                        )
 
 
 class ProteinCausalLMBatchCollator:
@@ -486,6 +569,7 @@ def create_streaming_protein_lm_dataloader(
     distributed: bool | None = None,
     rank: int | None = None,
     world_size: int | None = None,
+    shard_by: str = "file",
 ) -> DataLoader[CausalLMBatch]:
     dataset = ProteinCausalLMStreamingTextDataset(
         tokenizer,
@@ -508,6 +592,7 @@ def create_streaming_protein_lm_dataloader(
         distributed=distributed,
         rank=rank,
         world_size=world_size,
+        shard_by=shard_by,
     )
     collator = ProteinCausalLMBatchCollator(
         pad_token_id=tokenizer.str_to_int["<|pad|>"],

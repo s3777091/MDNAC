@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 from ...config import MDCModelConfig
 from ..blocks.transformer import TransformerBlock
 from ..cache.decoder_cache import MDCDecoderCache
@@ -57,6 +58,43 @@ class MDCDecoderModel(nn.Module):
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
         self.current_pos = 0
+        # Gradient checkpointing: recompute each block's activations during backward
+        # instead of storing them. Trades ~30% extra compute for ~half the activation
+        # VRAM. Safe here because the architecture has no dropout (recompute is exact).
+        self.gradient_checkpointing = False
+        self._gradient_checkpointing_use_reentrant = False
+
+    def set_gradient_checkpointing(self, enabled: bool, *, use_reentrant: bool = False) -> None:
+        """Enable/disable activation checkpointing for the transformer blocks.
+
+        Only active during training and when no KV/linear cache is in use (i.e. not
+        during cached autoregressive decoding).
+        """
+        self.gradient_checkpointing = bool(enabled)
+        self._gradient_checkpointing_use_reentrant = bool(use_reentrant)
+
+    @staticmethod
+    def _run_block_checkpointed(
+        block: TransformerBlock,
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        cos: torch.Tensor,
+        sin: torch.Tensor,
+        attention_mask: torch.Tensor | None,
+    ) -> torch.Tensor:
+        # Cache-free training path: start_pos is always 0 and no cache is threaded.
+        output, _ = block(
+            x,
+            mask=mask,
+            cos=cos,
+            sin=sin,
+            start_pos=0,
+            cache=None,
+            linear_cache=None,
+            cache_position=None,
+            attention_mask=attention_mask,
+        )
+        return output
 
     def create_mask(
         self,
@@ -126,23 +164,41 @@ class MDCDecoderModel(nn.Module):
             qmask = attn_mask[:, pos_start : pos_start + num_tokens].unsqueeze(-1)
             x = x * qmask.to(x.dtype)
 
+        use_gradient_checkpointing = (
+            self.gradient_checkpointing and self.training and cache is None
+        )
+        block_attention_mask = (
+            attn_mask[:, pos_start : pos_start + num_tokens]
+            if attn_mask is not None
+            else None
+        )
+
         for index, block in enumerate(self.trf_blocks):
             block_cache = cache.get(index) if cache is not None else None
-            x, new_block_cache = block(
-                x,
-                mask=mask,
-                cos=self.cos,
-                sin=self.sin,
-                start_pos=pos_start,
-                cache=block_cache,
-                linear_cache=cache.linear_cache if cache is not None else None,
-                cache_position=cache_position,
-                attention_mask=(
-                    attn_mask[:, pos_start : pos_start + num_tokens]
-                    if attn_mask is not None
-                    else None
-                ),
-            )
+            if use_gradient_checkpointing:
+                x = checkpoint(
+                    self._run_block_checkpointed,
+                    block,
+                    x,
+                    mask,
+                    self.cos,
+                    self.sin,
+                    block_attention_mask,
+                    use_reentrant=self._gradient_checkpointing_use_reentrant,
+                )
+                new_block_cache = None
+            else:
+                x, new_block_cache = block(
+                    x,
+                    mask=mask,
+                    cos=self.cos,
+                    sin=self.sin,
+                    start_pos=pos_start,
+                    cache=block_cache,
+                    linear_cache=cache.linear_cache if cache is not None else None,
+                    cache_position=cache_position,
+                    attention_mask=block_attention_mask,
+                )
             if cache is not None and new_block_cache is not None:
                 cache.update(index, new_block_cache)
 

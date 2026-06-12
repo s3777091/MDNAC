@@ -237,6 +237,7 @@ class DataLoaderFactory:
         minio_data_config: DataConfig | None,
         local_paths_provider: Callable[[], tuple[Path, ...]],
         is_main_process: bool,
+        merged_train_path: Path | None = None,
     ) -> None:
         self._tokenizer = tokenizer
         self._model_config = model_config
@@ -248,11 +249,18 @@ class DataLoaderFactory:
         self._minio_data_config = minio_data_config
         self._local_paths_provider = local_paths_provider
         self._is_main_process = is_main_process
+        self._merged_train_path = merged_train_path
 
     def build(self) -> LoaderBundle:
         local_paths = self._local_paths_provider()
         if self._use_minio:
             return self.build_minio_streaming_loaders()
+        if self._merged_train_path is not None:
+            # Single merged corpus -> stream it with LINE-level sharding so every
+            # worker stays busy (file-level sharding would idle all but one worker).
+            return self.build_local_streaming_loaders(
+                (self._merged_train_path,), shard_by="line"
+            )
         if self._use_local_streaming(local_paths):
             return self.build_local_streaming_loaders(local_paths)
         return self.build_in_memory_loaders(local_paths)
@@ -281,7 +289,9 @@ class DataLoaderFactory:
         )
         return LoaderBundle(train_loader, train_eval_loader, val_loader)
 
-    def build_local_streaming_loaders(self, local_paths: tuple[Path, ...]) -> LoaderBundle:
+    def build_local_streaming_loaders(
+        self, local_paths: tuple[Path, ...], *, shard_by: str = "file"
+    ) -> LoaderBundle:
         train_loader = self._streaming_loader(
             split="train",
             part_paths=local_paths,
@@ -292,14 +302,15 @@ class DataLoaderFactory:
             distributed=self._runtime.distributed,
             rank=self._runtime.rank,
             world_size=self._runtime.world_size,
+            shard_by=shard_by,
         )
         train_eval_loader = (
-            self._eval_streaming_loader(split="train", part_paths=local_paths)
+            self._eval_streaming_loader(split="train", part_paths=local_paths, shard_by=shard_by)
             if self._is_main_process
             else None
         )
         val_loader = (
-            self._eval_streaming_loader(split="val", part_paths=local_paths)
+            self._eval_streaming_loader(split="val", part_paths=local_paths, shard_by=shard_by)
             if self._is_main_process
             else None
         )
@@ -375,6 +386,7 @@ class DataLoaderFactory:
         split: str,
         include_minio: bool = False,
         part_paths: tuple[Path, ...] | None = None,
+        shard_by: str = "file",
     ) -> ProteinBatchLoader:
         return self._streaming_loader(
             split=split,
@@ -384,6 +396,7 @@ class DataLoaderFactory:
             seed=0,
             distributed=False,
             include_minio=include_minio,
+            shard_by=shard_by,
         )
 
     def _streaming_loader(
@@ -399,6 +412,7 @@ class DataLoaderFactory:
         shuffle_buffer_size: int | None = None,
         rank: int | None = None,
         world_size: int | None = None,
+        shard_by: str = "file",
     ) -> ProteinBatchLoader:
         kwargs: dict[str, Any] = {
             "shuffle_parts": shuffle_parts,
@@ -408,6 +422,7 @@ class DataLoaderFactory:
             "split": split,
             "train_ratio": float(self._data_cfg["train_ratio"]),
             "split_seed": int(self._data_cfg.get("split_seed", 42)),
+            "shard_by": shard_by,
             **self._loader_kwargs,
         }
         if shuffle_buffer_size is not None:

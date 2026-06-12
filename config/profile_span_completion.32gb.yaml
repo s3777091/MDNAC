@@ -1,3 +1,6 @@
+# Protein span-completion (profile -> sequence) tuned for a 32 GB Tesla V100.
+# Pairs with config/train.32gb.yaml (1024-context backbone). Volta -> fp16 (see note below).
+# Objective: decoder-only causal LM, prompt-masked, EOS supervised (learn to stop).
 paths:
   instruction_jsonl_path: data/compiled/refseq_bacteria_span_completion/instruction.jsonl
   instruction_part_dir: data/compiled/refseq_bacteria_span_completion
@@ -17,12 +20,17 @@ data:
   instruction_part_glob: instruction_part_*.jsonl
   train_ratio: 0.98
   split_seed: 42
-  batch_size: 4
-  num_workers: 0
-  pin_memory: false
+  # Completion context follows the backbone (1024 if pretrained with train.32gb.yaml).
+  # bs6 x accum11 = effective batch 66 (~64, the design point for sparse span loss),
+  # ~23 GB fp16 at ctx 1024. NOTE: the instruction trainer has NO preflight check, so
+  # this stays conservatively under 28 GB. Watch nvidia-smi; raise to 7-8 only if the
+  # real peak leaves margin (a 1024-ctx backbone at bs8 is ~30 GB = too tight).
+  batch_size: 6
+  num_workers: 4
+  pin_memory: true
   shuffle_files: true
   shuffle_records: true
-  shuffle_buffer_size: 2048
+  shuffle_buffer_size: 8192
   audit_before_training: true
   reuse_existing_audit: false
   count_splits_before_training: auto
@@ -36,9 +44,9 @@ artifacts:
 training:
   num_epochs: 2
   max_steps:
-  gradient_accumulation_steps: 16
+  gradient_accumulation_steps: 11   # bs6 x 11 = effective batch 66 (~64)
   eval_freq: 100
-  eval_batches: 8
+  eval_batches: 16
   log_every_steps: 10
   save_every_steps: 250
   grad_clip_norm: 1.0
@@ -47,35 +55,30 @@ training:
   save_final: true
   train_on_prompt: false
   include_separator_in_loss: false
-  # Supervise the end-of-sequence token after the span so the model learns to stop
-  # at the correct length instead of running past the completed span.
+  # Supervise EOS so the model stops at the right span length (less run-on / hallucination).
   include_eos_in_loss: true
 optimizer:
   type: adamw
   learning_rate: 0.00005
   weight_decay: 0.1
   fused: auto
-  # Warmup is important here: the fused-vocab profile/separator embedding rows are
-  # randomly initialised when adapting the protein backbone, so a short warmup
-  # keeps their large early gradients from destabilising the restored weights.
   lr_scheduler: cosine
   warmup_steps: 100
   min_lr_ratio: 0.1
-  # Set to enable full cosine decay (absolute optimizer steps); null = warmup then hold.
+  # Set to the fine-tune horizon (steps) to enable cosine decay; null = warmup then hold.
   lr_decay_steps: null
 runtime:
   device: auto
   multi_gpu_mode: auto
   ddp_find_unused_parameters: false
   data_parallel_device_ids:
-  mixed_precision: bf16
+  # Volta (V100) -> fp16. Change to bf16 ONLY on Ampere+ (A100/A30).
+  mixed_precision: fp16
   seed: 123
-  # Set true to recompute block activations in backward (~half activation VRAM, ~30%
-  # slower). Numerically exact (no dropout). Frees VRAM to raise batch_size.
+  # ~half activation VRAM for ~30% slower steps; numerically exact (no dropout).
   gradient_checkpointing: false
-# LoRA for the fine-tune: freeze the backbone, train only low-rank adapters + the
-# re-vocabularised embedding/head. Shrinks AdamW state to a few % -> more VRAM headroom.
-# enabled:false keeps full fine-tuning (current behaviour). Flip to true to use LoRA.
+# LoRA: freeze backbone, train only low-rank adapters + re-vocabularised embedding/head.
+# enabled:false keeps full fine-tuning. Flip to true for a lighter, faster fine-tune.
 lora:
   enabled: false
   rank: 8

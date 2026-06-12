@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +20,7 @@ from libs.core.pretrain.distributed import (
 from libs.core.pretrain.training import (
     compute_mdc_causal_lm_loss,
 )
+from libs.core.pretrain.file_concat import concatenate_text_files
 from libs.core.pretrain.lr_schedule import (
     LRScheduleConfig,
     build_warmup_cosine_scheduler,
@@ -434,6 +435,9 @@ class ProteinPretrainTrainer:
             progen_config = {**progen_config, **overrides}
         self.model_config = build_mdc_config_from_progen_config(progen_config, dtype=model_dtype)
         self.model = MDCDecoderModel(self.model_config)
+        if self._runtime_cfg.get("gradient_checkpointing", False):
+            self.model.set_gradient_checkpointing(True)
+            self._log("🧮 Gradient checkpointing enabled (lower activation VRAM, ~30% slower).")
 
     def _resolve_model_dtype(self, mixed_precision: str) -> torch.dtype:
         if mixed_precision == "bf16":
@@ -538,6 +542,7 @@ class ProteinPretrainTrainer:
             return ()
 
     def _build_data_loaders(self) -> LoaderBundle:
+        merged_train_path = self._maybe_merge_train_parts()
         factory = DataLoaderFactory(
             tokenizer=self.tokenizer,
             model_config=self.model_config,
@@ -549,8 +554,72 @@ class ProteinPretrainTrainer:
             minio_data_config=self.minio_data_config,
             local_paths_provider=self._discover_local_paths,
             is_main_process=self.is_main_process,
+            merged_train_path=merged_train_path,
         )
         return factory.build()
+
+    def _maybe_merge_train_parts(self) -> Path | None:
+        """Optionally concatenate local train parts into one file before training.
+
+        Keeps the streaming flow (the merged file is streamed line-by-line, never loaded
+        into RAM) but removes multi-part complexity. Returns the merged file path, or
+        None when merging is disabled / not applicable (MinIO streaming, no local parts).
+        """
+        if not self._data_cfg.get("merge_parts_before_training", False):
+            return None
+        if self._minio_cfg.get("train_parts_prefix_uri") or self._minio_cfg.get("train_part_uris"):
+            return None
+
+        local_paths = self._discover_local_paths()
+        if not local_paths:
+            return None
+        if len(local_paths) == 1:
+            # Nothing to concatenate; stream the single file (line sharding keeps all
+            # dataloader workers busy on it).
+            return Path(local_paths[0])
+
+        merged_path = self._resolve_merged_train_path()
+        overwrite = bool(self._data_cfg.get("merge_overwrite", False))
+        if self.is_main_process:
+            if (
+                not overwrite
+                and merged_path.exists()
+                and self._merged_is_up_to_date(merged_path, local_paths)
+            ):
+                self._log(f"📎 Reusing up-to-date merged corpus: {merged_path}")
+            else:
+                merged_path.parent.mkdir(parents=True, exist_ok=True)
+                self._log(
+                    f"📎 Merging {len(local_paths)} parts → {merged_path.name} "
+                    f"(streaming concat, low RAM)..."
+                )
+                summary = concatenate_text_files(
+                    [str(path) for path in local_paths],
+                    output_path=str(merged_path),
+                    overwrite=True,
+                    ensure_line_boundary=True,
+                )
+                self._log(
+                    f"✅ Merged {summary.source_count} parts → {merged_path.name} "
+                    f"({summary.output_bytes:,} bytes)"
+                )
+        self._distributed_barrier()
+        return merged_path
+
+    def _resolve_merged_train_path(self) -> Path:
+        configured = self._data_cfg.get("merged_train_path")
+        if configured:
+            path = Path(str(configured))
+            return path if path.is_absolute() else (self.project_root / path)
+        return self._paths["train_part_cache_dir"] / "merged_train.txt"
+
+    @staticmethod
+    def _merged_is_up_to_date(merged_path: Path, local_paths: Sequence[Path]) -> bool:
+        try:
+            merged_mtime = merged_path.stat().st_mtime
+            return all(Path(part).stat().st_mtime <= merged_mtime for part in local_paths)
+        except OSError:
+            return False
 
     def _training_loop(self, loaders: LoaderBundle) -> None:
         train_loader = loaders.train_loader
